@@ -760,8 +760,11 @@ class t_js_object:
 
 
 class t_scope_chain:
-    def __init__(_, stack=[]):
-        _.stack = stack
+    def __init__(_, stack=None):
+        if stack is None:
+            _.stack = []
+        else:
+            _.stack = stack
 
     def push(_, obj):
         _.stack.append(obj)
@@ -825,12 +828,15 @@ class t_js_state:
             this = _.global_object
         activation_object = t_js_object()
         activation_object.put_internal("class", "activation_object")
-        arguments_object = t_js_object() # todo
+        activation_object.put_internal("prototype", js_null)
+        arguments_object = t_js_object()
+        arguments_object.put_internal("prototype", object_prototype)
         arguments_object.put("callee", func_obj, dont_enum=True)
-        arguments_object.put("length", len(params), dont_enum=True)
+        length = t_js_number(len(params))
+        arguments_object.put("length", length, dont_enum=True)
         # todo
         for i in range(len(params)):
-            param = to_string(_, params[i])
+            param = to_string(_, t_js_number(i))
             arguments_object.put(param, params[i], dont_enum=True)
         activation_object.put("arguments", arguments_object, dont_delete=True)
         ec = t_exec_context(t_scope_chain([_.global_object,
@@ -1187,6 +1193,7 @@ def eval_identifier(_, identifier):
     for obj in reversed(_.exec_context().scope_chain.stack):
         if js_has_property(obj, identifier):
             new_base = obj
+            break
     return t_js_reference(base=new_base, property_name=identifier)
 
 
@@ -1304,7 +1311,7 @@ def eval_op(_, op, args):
     if op == "typeof":
         x = js_eval_exp(_, args[0])
         if type(x) is t_js_reference and get_base(x) is js_null:
-            return js_undefined
+            return "undefined"
         x = get_value(x)
         if type(x) is t_js_undefined:
             return t_js_string("undefined")
@@ -1912,8 +1919,102 @@ tester.add_test("""
 """, True)
 
 tester.add_test("""
-0 / 0;
-""", True)
+function fib(x) {
+ if (x == 0) {
+  return 0;
+ }
+ if (x == 1) {
+  return 1;
+ }
+ return fib(x-1) + fib(x-2);
+}
+fib(10);
+""", 55.0)
+
+tester.add_test("""
+var result = 1;
+var counter = 0;
+while (counter < 10) {
+ result *= 2;
+ counter++;
+}
+result;
+""", 1024.0)
+
+tester.add_test("""
+var result = 1;
+for (var i = 0; i < 12; i++) {
+ result *= 2;
+}
+""", 4096.0)
+
+tester.add_test("""
+var result = -1;
+for (var i = 0; i < 100; i++) {
+ if (i * i == 144) {
+  result = i;
+  break;
+ }
+}
+i;
+""", 12.0)
+
+tester.add_test("""
+function fun() {
+ var result = "";
+ for (var i = 0; i < arguments.length; i++) {
+  result += arguments[i];
+ }
+ return result;
+}
+fun("a", "bc", "def");
+""", "abcdef")
+
+tester.add_test("""
+typeof abc;
+""", "undefined")
+
+tester.add_test("""
+function minus(a, b) {
+ if (typeof(b) == "undefined") {
+  return -a;
+ }
+ return a - b;
+}
+minus(minus(4, 5));
+""", 1.0)
+
+tester.add_test("""
+function call_n_times(fun, n) {
+ if (n == 0) {
+  return;
+ }
+ fun();
+ call_n_times(fun, n-1);
+}
+var x = 0;
+function inc() {
+ x++;
+}
+call_n_times(inc, 4);
+x;
+""", 4.0)
+
+tester.add_test("""
+function call_n_times(fun, n) {
+ if (n == 0) {
+  return;
+ }
+ fun();
+ call_n_times(fun, n-1);
+}
+var x = 0;
+function inc() {
+ x++;
+}
+call_n_times(inc, 4);
+x;
+""", 4.0)
 
 tester.run_tests()
 sys.exit()
