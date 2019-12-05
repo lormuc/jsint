@@ -5,6 +5,7 @@ from enum import Enum
 import math
 import copy
 import sys
+from inspect import signature
 
 class t_loc:
     def __init__(_):
@@ -802,11 +803,37 @@ class t_exec_context:
         return t_exec_context(_.scope_chain.copy(), _.variable_object, _.this)
 
 
+def parse_js(code):
+    return parse(lex(code)).kids[0]
+
+
+def js_eval(_, this, x):
+    if type(x) is not str:
+        return x
+    ast = parse_js(x)
+    _.enter_eval_code()
+    instantiate_funcs(_, ast)
+    instantiate_vars(_, ast)
+    res = eval_program(_, ast)
+    _.leave()
+    if res.kind == "normal" and res.value is not None:
+        return res.value
+    return js_undefined
+
+
+def create_global_object():
+    o = t_js_object()
+    o.put_internal("prototype", js_null)
+    o.put_internal("class", "Object")
+    o.put("NaN", float("nan"))
+    o.put("Infinity", math.inf)
+    put_native_method(o, "eval", js_eval)
+    return o
+
+
 class t_js_state:
     def __init__(_):
-        _.global_object = t_js_object()
-        _.global_object.put_internal("prototype", js_null)
-        _.global_object.put_internal("class", "Object")
+        _.global_object = create_global_object()
         _.exec_contexts = []
 
     def exec_context(_):
@@ -818,7 +845,7 @@ class t_js_state:
         _.exec_contexts.append(ec)
 
     def enter_eval_code(_):
-        if exec_contexts == []:
+        if _.exec_contexts == []:
             _.enter_global_code()
             return
         _.exec_contexts.append(_.exec_context().copy())
@@ -846,9 +873,6 @@ class t_js_state:
 
     def leave(_):
         _.exec_contexts.pop()
-
-
-js_state = t_js_state()
 
 
 def is_activation_object(o):
@@ -955,6 +979,8 @@ def js_construct(_, o, args):
 
 def js_call(_, func, this, args):
     body = func.get_internal("function_body")
+    if type(body) is not t_ast:
+        return body(_, this, *args)
     params = func.get_internal("function_params")
     _.enter_func_code(this, args, func)
     instantiate_params(_, params, args)
@@ -1694,14 +1720,13 @@ def create_object():
     return o
 
 
-def create_function(name, params, body):
+def create_native_function(name, func):
     res = t_js_object()
     res.put_internal("class", "Function")
     res.put_internal("prototype", function_prototype)
     res.put_internal("function_name", name)
-    res.put_internal("function_params", params)
-    res.put_internal("function_body", body)
-    l = len(params)
+    res.put_internal("function_body", func)
+    l = t_js_number(len(signature(func).parameters) - 2)
     res.put("length", l, dont_delete=True, dont_enum=True, read_only=True)
     proto = create_object()
     proto.put("constructor", res, dont_enum=True)
@@ -1709,18 +1734,44 @@ def create_function(name, params, body):
     return res
 
 
-def js_eval(ast):
+def create_function(name, params, body):
+    res = t_js_object()
+    res.put_internal("class", "Function")
+    res.put_internal("prototype", function_prototype)
+    res.put_internal("function_name", name)
+    res.put_internal("function_params", params)
+    res.put_internal("function_body", body)
+    l = t_js_number(len(params))
+    res.put("length", l, dont_delete=True, dont_enum=True, read_only=True)
+    proto = create_object()
+    proto.put("constructor", res, dont_enum=True)
+    res.put("prototype", proto, dont_enum=True)
+    return res
+
+
+def put_native_method(o, name, func):
+    o.put(name, create_native_function(name, func))
+
+
+def eval_program(_, ast):
+    res = js_eval_stmt(_, ast.kids[0])
+    for i in range(1, len(ast.kids)):
+        x = js_eval_stmt(_, ast.kids[i])
+        if x.value is not None:
+            res = x
+    return res
+
+
+def execute(ast):
     assert ast.kind == "program"
     assert ast.kids != []
     _ = t_js_state()
     _.enter_global_code()
     instantiate_funcs(_, ast)
     instantiate_vars(_, ast)
-    res = js_eval_stmt(_, ast.kids[0])
-    for i in range(1, len(ast.kids)):
-        x = js_eval_stmt(_, ast.kids[i])
-        if x.value is not None:
-            res = x
+    res = eval_program(_, ast)
+    _.leave()
+    assert _.exec_contexts == []
     return res
 
 
@@ -1731,10 +1782,6 @@ def enter_global_code(state, ast):
             identifier = kid.kids[0].kids[0].value
             state.exec_context().instantiate_var_decl(identifier)
     state.leave()
-
-
-def eval_program(code):
-    return js_eval(parse(lex(code)).kids[0])
 
 
 class t_tester:
@@ -1748,7 +1795,7 @@ class t_tester:
         for test in _.tests:
             code = test[0]
             expected = test[1]
-            result = eval_program(code).value
+            result = execute(parse_js(code)).value
             if result != expected:
                 print("-" * 79)
                 print(code)
@@ -2001,28 +2048,41 @@ x;
 """, 4.0)
 
 tester.add_test("""
-function call_n_times(fun, n) {
- if (n == 0) {
-  return;
- }
- fun();
- call_n_times(fun, n-1);
-}
-var x = 0;
-function inc() {
- x++;
-}
-call_n_times(inc, 4);
-x;
+Infinity;
+""", math.inf)
+
+tester.add_test("""
+-Infinity;
+""", -math.inf)
+
+tester.add_test("""
+NaN != NaN;
+""", True)
+
+tester.add_test("""
+eval("4;");
 """, 4.0)
 
-tester.run_tests()
-sys.exit()
+tester.add_test("""
+eval(3945);
+""", 3945.0)
 
-src = """
-this.a = 3;
-this["a"];
-"""
-ast = parse(lex(src))
-ast.show()
-print(js_eval(ast.kids[0]))
+tester.add_test("""
+var x = 9, y = 3;
+eval("x + y + 1;");
+""", 13.0)
+
+tester.add_test("""
+var z = '"abc";';
+eval(z);
+""", "abc")
+
+tester.add_test("""
+eval("if (0) {} else { 49; }");
+""", 49.0)
+
+tester.add_test("""
+eval.length;
+""", 1.0)
+
+tester.run_tests()
