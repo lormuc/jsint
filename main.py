@@ -6,6 +6,7 @@ import math
 import copy
 import sys
 from inspect import signature
+import traceback
 
 class t_loc:
     def __init__(_):
@@ -343,7 +344,7 @@ class t_ast:
                 kid.show(level + 1)
 
 
-def parse(lexemes):
+def parse(lexemes, rule_name="program"):
     pos = 0
     result = t_ast()
     cur_node = result
@@ -667,14 +668,16 @@ def parse(lexemes):
 
     rule("formal_params",
          opt(comma_list("@identifier")))
+    rule("func_body", star("@stmt"))
     rule("func_decl",
-         "function", "@identifier", "(", "@formal_params", ")", "@block")
+         "function", "@identifier", "(", "@formal_params", ")",
+         "{", "@func_body", "}")
 
     rule("program",
          always(seq(plus(bar("@func_decl", "@stmt")), "eof")))
 
-    apply("@program")
-    return result
+    apply("@" + rule_name)
+    return result.kids[0]
 
 
 class t_js_undefined:
@@ -807,8 +810,8 @@ class t_exec_context:
         return t_exec_context(_.scope_chain.copy(), _.variable_object, _.this)
 
 
-def parse_js(code):
-    return parse(lex(code)).kids[0]
+def parse_code(code):
+    return parse(lex(code))
 
 
 def arg_get(args, idx):
@@ -821,7 +824,7 @@ def js_eval(_, this, args):
     x = arg_get(args, 0)
     if type(x) is not str:
         return x
-    ast = parse_js(x)
+    ast = parse_code(x)
     _.enter_eval_code()
     instantiate_funcs(_, ast)
     instantiate_vars(_, ast)
@@ -832,24 +835,32 @@ def js_eval(_, this, args):
     return js_undefined
 
 
+def empty_function(_, this, args):
+    return js_undefined
+
+
+def create_new_object(_):
+    o = t_js_object()
+    o.put_internal("prototype", _.object_prototype)
+    o.put_internal("class", "Object")
+    return o
+
+
 def call_object_constructor(_, this, args):
     value = arg_get(args, 0)
     if value in [js_null, js_undefined]:
-        return construct_object(_, [value])
+        return create_new_object(_)
     return to_object(_, value)
 
 
-def construct_object(_, args):
+def construct_object(_, args, unused=None):
     value = arg_get(args, 0)
     if type(value) is t_js_object:
         return value
     if type(value) in [t_js_string, t_js_boolean, t_js_number]:
         return to_object(_, value)
     assert value in [js_null, js_undefined]
-    o = t_js_object()
-    o.put_internal("prototype", _.object_prototype)
-    o.put_internal("class", "Object")
-    return o
+    return create_new_object(_)
 
 
 def object_to_string(_, this):
@@ -860,6 +871,68 @@ def object_value_of(_, this, args):
     return this
 
 
+def call_function_constructor(_, this, args):
+    return construct_function(_, args)
+
+
+def construct_function(_, args, unused=None):
+    params_string = ""
+    body = ""
+    if len(args) >= 1:
+        body = args[-1]
+        for i in range(len(args) - 1):
+            if i != 0:
+                params_string += ","
+            params_string += to_string(_, args[i])
+    body = to_string(_, body)
+    params_ast = parse(lex(params_string), "formal_params")
+    body_ast = parse(lex(body), "func_body")
+    params = []
+    for kid in params_ast.kids:
+        assert kid.kind == "identifier"
+        params.append(kid.value)
+    return create_function(_, params, body_ast)
+
+
+length_attrs = {"dont_enum", "dont_delete", "read_only"}
+non_length_attrs = {"dont_enum"}
+
+def global_function_init(_):
+    function_ctor = t_js_object()
+    function_ctor.put_internal("prototype", _.function_prototype)
+    function_ctor.put_internal("class", "Function")
+    function_ctor.put_internal("call", call_function_constructor)
+    function_ctor.put_internal("construct", construct_function)
+    function_ctor.put("length", t_js_number(1), length_attrs)
+    function_ctor.put("prototype", _.function_prototype, non_length_attrs)
+
+    _.function_prototype.put_internal("prototype", _.object_prototype)
+    _.function_prototype.put_internal("class", "Function")
+    _.function_prototype.put_internal("call", empty_function)
+    _.function_prototype.put("constructor", function_ctor, non_length_attrs)
+    _.function_prototype.put("length", t_js_number(0), length_attrs)
+    # implement toString
+    _.global_object.put("Function", function_ctor)
+
+
+def global_object_init(_):
+    object_ctor = t_js_object()
+    object_ctor.put_internal("prototype", _.function_prototype)
+    object_ctor.put_internal("class", "Function")
+    object_ctor.put_internal("call", call_object_constructor)
+    object_ctor.put_internal("construct", construct_object)
+    object_ctor.put("length", t_js_number(1), length_attrs)
+
+    _.object_prototype.put_internal("prototype", js_null)
+    _.object_prototype.put_internal("class", "Object")
+    _.object_prototype.put("constructor", object_ctor, non_length_attrs)
+    put_native_method(_, _.object_prototype, "toString", object_to_string)
+    put_native_method(_, _.object_prototype, "valueOf", object_value_of)
+    object_ctor.put("prototype", _.object_prototype, non_length_attrs)
+
+    _.global_object.put("Object", object_ctor)
+
+
 class t_js_state:
     def __init__(_):
         _.global_object = t_js_object()
@@ -868,28 +941,13 @@ class t_js_state:
         _.global_object.put("NaN", float("nan"))
         _.global_object.put("Infinity", math.inf)
 
-        _.function_prototype = js_null
         _.object_prototype = t_js_object()
+        _.function_prototype = t_js_object()
+
+        global_function_init(_)
+        global_object_init(_)
 
         put_native_method(_, _.global_object, "eval", js_eval)
-
-        object_ctor = t_js_object()
-        object_ctor.put_internal("call", call_object_constructor)
-        object_ctor.put_internal("construct", construct_object)
-        object_ctor.put_internal("class", "Function")
-        object_ctor.put_internal("prototype", _.function_prototype)
-        attrs = {"dont_enum", "dont_delete", "read_only"}
-
-        _.object_prototype.put_internal("prototype", js_null)
-        _.object_prototype.put_internal("class", "Object")
-        _.object_prototype.put("constructor", object_ctor)
-        put_native_method(_, _.object_prototype, "toString", object_to_string)
-        put_native_method(_, _.object_prototype, "valueOf", object_value_of)
-        object_ctor.put("prototype", _.object_prototype, attrs)
-
-        object_ctor.put("length", t_js_number(1), attrs)
-        object_ctor.put_internal("function_name", "Object")
-        _.global_object.put("Object", object_ctor)
 
         _.exec_contexts = []
 
@@ -1030,8 +1088,8 @@ def js_default_value(_, o, hint=None):
         return w
 
 
-def js_construct(_, o, args):
-    return o.get_internal("construct")(_, args)
+def js_construct(_, obj, args):
+    return obj.get_internal("construct")(_, args, obj)
 
 
 def js_call(_, func, this, args):
@@ -1042,7 +1100,15 @@ def js_call(_, func, this, args):
     _.enter_func_code(this, args, func)
     instantiate_params(_, params, args)
     instantiate_vars(_, body)
-    res = js_eval_stmt(_, body)
+    res = normal_completion
+    for i in range(len(body.kids)):
+        if res.kind != "normal":
+            break
+        c = js_eval_stmt(_, body.kids[i])
+        v = c.value
+        if v is None:
+            v = res.value
+        res = t_js_completion(c.kind, v)
     if res.kind == "return":
         res = res.value
     else:
@@ -1761,15 +1827,15 @@ def instantiate_funcs(_, ast):
             assert kid.kids[0].kind == "identifier"
             name = kid.kids[0].value
             args = [x.value for x in kid.kids[1].kids]
-            func = create_function(_, name, args, kid.kids[2])
+            func = create_function(_, args, kid.kids[2])
             _.exec_context().instantiate_func_decl(name, func)
 
 
-def create_native_function(_, name, func):
+def create_native_function(_, func):
     res = t_js_object()
     res.put_internal("class", "Function")
     res.put_internal("prototype", _.function_prototype)
-    res.put_internal("function_name", name)
+    # res.put_internal("function_name", name)
     res.put_internal("call", func)
     l = t_js_number(len(signature(func).parameters) - 2)
     res.put("length", l, {"dont_delete", "dont_enum", "read_only"})
@@ -1781,25 +1847,38 @@ def create_native_function(_, name, func):
     return res
 
 
-def create_function(_, name, params, body):
+def default_construct(_, args, func):
+    obj = t_js_object()
+    obj.put_internal("class", "Object")
+    prototype = func.get("prototype").value
+    if type(prototype) is t_js_object:
+        obj.put_internal("prototype", prototype)
+    else:
+        obj.put_internal("prototype", _.object_prototype)
+    x = js_call(_, func, obj, args)
+    if type(x) is t_js_object:
+        return x
+    return obj
+
+
+def create_function(_, params, body, name="", body_string=""):
     res = t_js_object()
     res.put_internal("class", "Function")
     res.put_internal("prototype", _.function_prototype)
-    res.put_internal("function_name", name)
+    # res.put_internal("function_name", name)
     res.put_internal("function_params", params)
+    # res.put_internal("function_body_string", body_string)
     res.put_internal("call", body)
-    l = t_js_number(len(params))
-    res.put("length", l, {"dont_delete", "dont_enum", "read_only"})
-    proto = t_js_object()
-    proto.put_internal("prototype", _.object_prototype)
-    proto.put_internal("class", "Object")
-    proto.put("constructor", res, {"dont_enum"})
-    res.put("prototype", proto, {"dont_enum"})
+    res.put_internal("construct", default_construct)
+    res.put("length", t_js_number(len(params)), length_attrs)
+    prototype = create_new_object(_)
+    prototype.put("constructor", res, {"dont_enum"})
+    res.put("prototype", prototype, {"dont_delete"})
     return res
 
 
 def put_native_method(_, o, name, func):
-    o.put(name, create_native_function(_, name, func))
+    o.put(name, create_native_function(_, func))
 
 
 def eval_program(_, ast):
@@ -1841,27 +1920,36 @@ class t_tester:
         _.tests.append((code, expected_result))
 
     def run_tests(_):
+        print("running tests ...")
+        failure_cnt = 0
         for test in _.tests:
             code = test[0]
             expected = test[1]
             # print(code)
-            # parse_js(code).show()
-            result = execute(parse_js(code)).value
-            if result != expected:
-                print("-" * 79)
+            # parse_code(code).show()
+            res = None
+            try:
+                res = execute(parse_code(code)).value
+                if res != expected:
+                    print(code)
+                    print("expected " + repr(expected) + ", got " + repr(res))
+                    print("-" * 79)
+                    failure_cnt += 1
+            except:
                 print(code)
-                print("expected " + repr(expected) + ", got " + repr(result))
+                traceback_lines = traceback.format_exc().splitlines()
+                if len(traceback_lines) > 10:
+                    traceback_lines = traceback_lines[-9:]
+                    print("  ...")
+                for line in traceback_lines:
+                    print(line)
                 print("-" * 79)
+                failure_cnt += 1
+        success_cnt = len(_.tests) - failure_cnt
+        print(f"{success_cnt} successes, {failure_cnt} failures")
 
 
 tester = t_tester()
-
-tester.add_test("""
-function f(x) {
- return x + 1;
-}
-f(0);
-""", 1.0)
 
 tester.add_test("""
 typeof 4.5;
@@ -2058,6 +2146,13 @@ i;
 """, 12.0)
 
 tester.add_test("""
+function f(x) {
+ return x + 1;
+}
+f(0);
+""", 1.0)
+
+tester.add_test("""
 function fun() {
  var result = "";
  for (var i = 0; i < arguments.length; i++) {
@@ -2157,5 +2252,41 @@ var x = Object();
 x.a = 4;
 x.valueOf().a;
 """, 4.0)
+
+tester.add_test("""
+var f = new Function("x", "x--; return x*x;");
+f(9);
+""", 64.0)
+
+tester.add_test("""
+var f = Function("x, y", "this.x = x; this.y = y;");
+var p = new f(1, 2);
+p.x + p.y;
+""", 3.0)
+
+tester.add_test("""
+var f = Function("x, y", "x+1;");
+typeof(f);
+""", "function")
+
+tester.add_test("""
+var f = Function("x, y", "x+1;");
+typeof(f);
+""", "function")
+
+tester.add_test("""
+var f = Function("x, y", "x+1;");
+f.length;
+""", 2.0)
+
+tester.add_test("""
+var f = Function("x, y", "x+1;");
+Function.prototype.length;
+""", 0.0)
+
+tester.add_test("""
+var f = Function("x, y", "x+1;");
+Function.prototype(9, 8, "abc");
+""", js_undefined)
 
 tester.run_tests()
