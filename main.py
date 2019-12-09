@@ -933,6 +933,66 @@ def global_object_init(_):
     _.global_object.put("Object", object_ctor)
 
 
+def construct_array(_, args, unused=None):
+    res = t_js_object()
+    res.put_internal("prototype", _.array_prototype)
+    res.put_internal("class", "Array")
+    if len(args) == 1 and type(args[0]) is t_js_number:
+        res.put("length", to_uint_32(_, args[0]), {"dont_enum", "dont_delete"})
+    else:
+        res.put("length", t_js_number(len(args)), {"dont_enum", "dont_delete"})
+        for i in range(len(args)):
+            res.put(to_string(_, t_js_number(i)), args[i])
+    return res
+
+
+def call_array_constructor(_, this, args):
+    return construct_array(_, args)
+
+
+def array_prototype_join(_, this, args):
+    length = int(to_uint_32(_, js_get(this, "length")))
+    separator = arg_get(args, 0)
+    if separator == js_undefined:
+        separator = ","
+    separator = to_string(_, separator)
+    if length == 0:
+        return ""
+    res = ""
+    for k in range(length):
+        if k != 0:
+            res += separator
+        x = js_get(this, to_string(_, t_js_number(k)))
+        res += "" if x in [js_undefined, js_null] else to_string(_, x)
+    return res
+
+
+def array_prototype_to_string(_, this, args):
+    return array_prototype_join(_, this, [])
+
+
+def global_array_init(_):
+    array_ctor = t_js_object()
+    array_ctor.put_internal("prototype", _.function_prototype)
+    array_ctor.put_internal("class", "Function")
+    array_ctor.put_internal("call", call_array_constructor)
+    array_ctor.put_internal("construct", construct_array)
+    array_ctor.put("length", t_js_number(1), length_attrs)
+
+    _.array_prototype = t_js_object()
+    _.array_prototype.put_internal("prototype", _.object_prototype)
+    _.array_prototype.put_internal("class", "Array")
+    _.array_prototype.put("length", t_js_number(0), length_attrs)
+    _.array_prototype.put("constructor", array_ctor, non_length_attrs)
+    put_native_method(_, _.array_prototype, "join", array_prototype_join, 1)
+    put_native_method(_, _.array_prototype, "toString", array_prototype_join)
+    _.array_prototype.put("constructor", array_ctor, non_length_attrs)
+
+    array_ctor.put("prototype", _.array_prototype, non_length_attrs)
+
+    _.global_object.put("Array", array_ctor)
+
+
 class t_js_state:
     def __init__(_):
         _.global_object = t_js_object()
@@ -946,8 +1006,9 @@ class t_js_state:
 
         global_function_init(_)
         global_object_init(_)
+        global_array_init(_)
 
-        put_native_method(_, _.global_object, "eval", js_eval)
+        put_native_method(_, _.global_object, "eval", js_eval, 1)
 
         _.exec_contexts = []
 
@@ -1012,14 +1073,40 @@ def js_get(o, prop_name):
     return js_get(proto, prop_name)
 
 
-def js_put(o, prop_name, value):
+def is_array_index(_, prop_name):
+    i = to_uint_32(_, prop_name)
+    return to_string(_, i) == prop_name and i != 2**32 - 1
+
+
+def array_update_length(_, arr, new_idx):
+    if not is_array_index(_, new_idx):
+        return
+    length = arr.get("length").value
+    new_idx = to_uint_32(_, new_idx)
+    if new_idx >= length:
+        arr.set_value("length", new_idx + 1)
+
+
+def js_put(_, o, prop_name, value):
     if not js_can_put(o, prop_name):
         return
-    x = o.get(prop_name)
-    if x is not None:
+    if o.get(prop_name) is not None:
+        if is_array(o):
+            if prop_name == "length":
+                new_length = to_uint_32(_, value)
+                old_length = o.get("length").value
+                for k in range(int(new_length), int(old_length)):
+                    idx = to_string(_, t_js_number(k))
+                    if o.get(idx) is not None:
+                        o.delete(idx)
+                value = new_length
         o.set_value(prop_name, value)
+        if is_array(o):
+            array_update_length(_, o, prop_name)
         return
     o.put(prop_name, value)
+    if is_array(o):
+        array_update_length(_, o, prop_name)
 
 
 def js_can_put(o, prop_name):
@@ -1143,9 +1230,9 @@ def put_value(_, v, w):
         raise t_runtime_error()
     b = get_base(v)
     if b is js_null:
-        js_put(_.global_object, get_property_name(v), w)
+        js_put(_, _.global_object, get_property_name(v), w)
     else:
-        js_put(b, get_property_name(v), w)
+        js_put(_, b, get_property_name(v), w)
 
 
 def to_primitive(_, value, preferred_type=None):
@@ -1422,6 +1509,10 @@ def eval_arguments(_, args):
 
 def is_function(x):
     return get_class(x) == "Function"
+
+
+def is_array(x):
+    return get_class(x) == "Array"
 
 
 def eval_op(_, op, args):
@@ -1831,14 +1922,13 @@ def instantiate_funcs(_, ast):
             _.exec_context().instantiate_func_decl(name, func)
 
 
-def create_native_function(_, func):
+def create_native_function(_, func, length):
     res = t_js_object()
     res.put_internal("class", "Function")
     res.put_internal("prototype", _.function_prototype)
     # res.put_internal("function_name", name)
     res.put_internal("call", func)
-    l = t_js_number(len(signature(func).parameters) - 2)
-    res.put("length", l, {"dont_delete", "dont_enum", "read_only"})
+    res.put("length", t_js_number(length), length_attrs)
     proto = t_js_object()
     proto.put_internal("prototype", _.object_prototype)
     proto.put_internal("class", "Object")
@@ -1877,8 +1967,8 @@ def create_function(_, params, body, name="", body_string=""):
     return res
 
 
-def put_native_method(_, o, name, func):
-    o.put(name, create_native_function(_, func))
+def put_native_method(_, o, name, func, length=0):
+    o.put(name, create_native_function(_, func, length))
 
 
 def eval_program(_, ast):
@@ -1922,9 +2012,11 @@ class t_tester:
     def run_tests(_):
         print("running tests ...")
         failure_cnt = 0
-        for test in _.tests:
-            code = test[0]
-            expected = test[1]
+        for i in range(len(_.tests)):
+            code = _.tests[i][0]
+            expected = _.tests[i][1]
+            print()
+            print("*** test " + str(i) + " ***")
             # print(code)
             # parse_code(code).show()
             res = None
@@ -2288,5 +2380,65 @@ tester.add_test("""
 var f = Function("x, y", "x+1;");
 Function.prototype(9, 8, "abc");
 """, js_undefined)
+
+tester.add_test("""
+arr = Array(1, 2, 3);
+arr[0] + arr[1] + arr[2] + arr.length;
+""", 9)
+
+tester.add_test("""
+arr = new Array(9);
+arr.length;
+""", 9)
+
+tester.add_test("""
+delete Array.length;
+Array.length;
+""", 1)
+
+tester.add_test("""
+Array.prototype.constructor == Array;
+""", js_true)
+
+tester.add_test("""
+a = Array(0, 1, 2);
+a[2]++;
+a[2];
+""", 3)
+
+tester.add_test("""
+a = Array(0, 1, 2, 3, 4);
+a.length = 2;
+a[2];
+""", js_undefined)
+
+tester.add_test("""
+a = Array(0, 1, 2, 3, 4);
+a[99] = 99;
+a.length;
+""", 100)
+
+tester.add_test("""
+a = Array(0, 1, 2, 3, 4);
+a.join();
+""", "0,1,2,3,4")
+
+tester.add_test("""
+a = Array(0, 1, 2, 3, 4);
+a.join(" ");
+""", "0 1 2 3 4")
+
+tester.add_test("""
+a = Array("a", "bc", "def");
+a.toString();
+""", "a,bc,def")
+
+tester.add_test("""
+Array.prototype.join.length;
+""", 1)
+
+tester.add_test("""
+Array.prototype.toString.length;
+""", 0)
 
 tester.run_tests()
