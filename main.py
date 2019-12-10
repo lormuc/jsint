@@ -967,6 +967,30 @@ def array_prototype_join(_, this, args):
     return res
 
 
+def array_prototype_reverse(_, this, args):
+    length = to_uint_32(_, js_get(this, "length"))
+    for k in range(int(length // 2)):
+        i = to_string(_, t_js_number(k))
+        j = to_string(_, length - 1 - k)
+        iv = js_get(this, i)
+        jv = js_get(this, j)
+        if this.get(j) is not None:
+            if this.get(i) is not None:
+                js_put(_, this, i, jv)
+                js_put(_, this, j, iv)
+            else:
+                js_put(_, this, i, jv)
+                js_delete(this, j)
+        else:
+            if this.get(i) is not None:
+                js_put(_, this, j, iv)
+                js_delete(this, i)
+            else:
+                js_delete(this, i)
+                js_delete(this, j)
+    return this
+
+
 def array_prototype_to_string(_, this, args):
     return array_prototype_join(_, this, [])
 
@@ -986,6 +1010,7 @@ def global_array_init(_):
     _.array_prototype.put("constructor", array_ctor, non_length_attrs)
     put_native_method(_, _.array_prototype, "join", array_prototype_join, 1)
     put_native_method(_, _.array_prototype, "toString", array_prototype_join)
+    put_native_method(_, _.array_prototype, "reverse", array_prototype_reverse)
     _.array_prototype.put("constructor", array_ctor, non_length_attrs)
 
     array_ctor.put("prototype", _.array_prototype, non_length_attrs)
@@ -998,8 +1023,10 @@ class t_js_state:
         _.global_object = t_js_object()
         _.global_object.put_internal("prototype", js_null)
         _.global_object.put_internal("class", "Object")
-        _.global_object.put("NaN", float("nan"))
-        _.global_object.put("Infinity", math.inf)
+        attrs = {"dont_enum", "dont_delete"}
+        _.global_object.put("NaN", float("nan"), attrs)
+        _.global_object.put("Infinity", math.inf, attrs)
+        _.global_object.put("undefined", js_undefined, attrs)
 
         _.object_prototype = t_js_object()
         _.function_prototype = t_js_object()
@@ -2440,5 +2467,23 @@ Array.prototype.join.length;
 tester.add_test("""
 Array.prototype.toString.length;
 """, 0)
+
+tester.add_test("""
+Array.prototype.reverse.length;
+""", 0)
+
+tester.add_test("""
+var a = Array(9, 4, 3);
+a.reverse();
+a[0] == 3 && a[1] == 4 && a[2] == 9;
+""", js_true)
+
+tester.add_test("""
+var a = Array(5);
+a[0] = 4;
+a[1] = 3;
+a.reverse();
+a[4] == 4 && a[3] == 3 && a[0] == undefined && a[1] == undefined;
+""", js_true)
 
 tester.run_tests()
