@@ -863,7 +863,7 @@ def construct_object(_, args, unused=None):
     return create_new_object(_)
 
 
-def object_to_string(_, this):
+def object_to_string(_, this, args):
     return "[object " + this.get_internal("class") + "]"
 
 
@@ -995,6 +995,160 @@ def array_prototype_to_string(_, this, args):
     return array_prototype_join(_, this, [])
 
 
+def construct_string(_, args, unused=None):
+    res = t_js_object()
+    res.put_internal("prototype", _.string_prototype)
+    res.put_internal("class", "String")
+    value = to_string(_, args[0]) if args != [] else ""
+    res.put_internal("value", value)
+    res.put("length", t_js_number(len(value)), length_attrs)
+    return res
+
+
+def call_string_constructor(_, this, args):
+    if args == []:
+        return ""
+    return to_string(_, args[0])
+
+
+def string_from_char_code(_, this, args):
+    res = ""
+    for char in args:
+        res += chr(int(to_uint_16(_, char)))
+    return res
+
+
+def string_prototype_to_string(_, this, args):
+    return this.get_internal("value")
+
+
+def string_prototype_value_of(_, this, args):
+    return this.get_internal("value")
+
+
+def string_prototype_char_at(_, this, args):
+    string = to_string(_, this)
+    pos = to_integer(_, arg_get(args, 0))
+    if pos < 0 or pos >= len(string):
+        return ""
+    return string[int(pos)]
+
+
+def string_prototype_char_code_at(_, this, args):
+    string = to_string(_, this)
+    pos = to_integer(_, arg_get(args, 0))
+    if pos < 0 or pos >= len(string):
+        return t_js_number("nan")
+    return t_js_number(ord(string[int(pos)]))
+
+
+def clamp(x, a, b):
+    x = t_js_number(x)
+    a = t_js_number(a)
+    b = t_js_number(b)
+    if x <= a:
+        return a
+    if x > b:
+        return b
+    return x
+
+
+def string_prototype_index_of(_, this, args):
+    string = to_string(_, this)
+    search_string = to_string(_, arg_get(args, 0))
+    pos = to_integer(_, arg_get(args, 1))
+    pos = clamp(pos, 0, len(string))
+    return t_js_number(string.find(search_string, int(pos)))
+
+
+def string_prototype_last_index_of(_, this, args):
+    string = to_string(_, this)
+    search_string = to_string(_, arg_get(args, 0))
+    pos = to_number(_, arg_get(args, 1))
+    if is_nan(pos):
+        pos = math.inf
+    else:
+        pos = to_integer(_, pos)
+    pos = clamp(pos, 0, len(string))
+    end = pos + len(search_string)
+    return t_js_number(string.rfind(search_string, 0, int(end)))
+
+
+def append(_, array, new_elt):
+    js_put(_, array, to_string(_, js_get(array, "length")), new_elt)
+
+
+def string_prototype_split(_, this, args):
+    string = to_string(_, this)
+    separator = arg_get(args, 0)
+    res = construct_array(_, [])
+
+    if separator == js_undefined:
+        js_put(_, res, "0", string)
+        return res
+    separator = to_string(_, separator)
+    if separator == "":
+        for char in string:
+            append(_, res, char)
+    else:
+        for word in string.split(sep=separator):
+            append(_, res, word)
+    return res
+
+
+def string_prototype_substring(_, this, args):
+    string = to_string(_, this)
+    start = to_integer(_, arg_get(args, 0))
+    end = arg_get(args, 1)
+    end = to_integer(_, end) if end != js_undefined else len(string)
+    start = clamp(start, 0, len(string))
+    end = clamp(end, 0, len(string))
+    if start > end:
+        start, end = end, start
+    return string[int(start):int(end)]
+
+
+def string_prototype_to_lower_case(_, this, args):
+    return to_string(_, this).lower()
+
+
+def string_prototype_to_upper_case(_, this, args):
+    return to_string(_, this).upper()
+
+
+def global_string_init(_):
+    string_ctor = t_js_object()
+    string_ctor.put_internal("prototype", _.function_prototype)
+    string_ctor.put_internal("class", "Function")
+    string_ctor.put_internal("call", call_string_constructor)
+    string_ctor.put_internal("construct", construct_string)
+    string_ctor.put("length", t_js_number(1), length_attrs)
+    put_native_method(_, string_ctor, "fromCharCode", string_from_char_code, 1)
+    string_ctor.put("length", t_js_number(1), length_attrs)
+
+    sp = t_js_object()
+    sp.put_internal("prototype", _.object_prototype)
+    sp.put_internal("class", "String")
+    sp.put("length", t_js_number(0), length_attrs)
+    sp.put("constructor", string_ctor, non_length_attrs)
+    put_native_method(_, sp, "toString", string_prototype_to_string)
+    put_native_method(_, sp, "valueOf", string_prototype_value_of)
+    put_native_method(_, sp, "charAt", string_prototype_char_at, 1)
+    put_native_method(_, sp, "charCodeAt", string_prototype_char_code_at, 1)
+    put_native_method(_, sp, "indexOf", string_prototype_index_of, 1)
+    put_native_method(_, sp, "lastIndexOf", string_prototype_last_index_of, 1)
+    put_native_method(_, sp, "split", string_prototype_split, 2)
+    put_native_method(_, sp, "substring", string_prototype_substring, 2)
+    put_native_method(_, sp, "toLowerCase", string_prototype_to_lower_case)
+    put_native_method(_, sp, "toUpperCase", string_prototype_to_upper_case)
+    _.string_prototype = sp
+
+    attrs = {"dont_enum", "dont_delete", "read_only"}
+    string_ctor.put("prototype", _.string_prototype, attrs)
+
+    _.global_object.put("String", string_ctor)
+
+
 def global_array_init(_):
     array_ctor = t_js_object()
     array_ctor.put_internal("prototype", _.function_prototype)
@@ -1034,6 +1188,7 @@ class t_js_state:
         global_function_init(_)
         global_object_init(_)
         global_array_init(_)
+        global_string_init(_)
 
         put_native_method(_, _.global_object, "eval", js_eval, 1)
 
@@ -1395,6 +1550,8 @@ def to_object(_, value):
     if type(value) is t_js_undefined or type(value) is t_js_null:
         raise t_runtime_error()
     # todo
+    if type(value) is t_js_string:
+        return construct_string(_, [value])
     if type(value) is t_js_object:
         return value
 
@@ -2485,5 +2642,103 @@ a[1] = 3;
 a.reverse();
 a[4] == 4 && a[3] == 3 && a[0] == undefined && a[1] == undefined;
 """, js_true)
+
+tester.add_test("""
+typeof new String();
+""", "object")
+
+tester.add_test("""
+var x = new String();
+x.valueOf();
+""", "")
+
+tester.add_test("""
+var x = new String("abcdef");
+x.length;
+""", 6)
+
+tester.add_test("""
+String(123);
+""", "123")
+
+tester.add_test("""
+String();
+""", "")
+
+tester.add_test("""
+(new String("abc")).toString();
+""", "abc")
+
+tester.add_test("""
+(new String("abc")).valueOf();
+""", "abc")
+
+tester.add_test("""
+"abc".charAt(1);
+""", "b")
+
+tester.add_test("""
+"abc".charAt(1234);
+""", "")
+
+tester.add_test("""
+"abc".charAt(-1234);
+""", "")
+
+tester.add_test("""
+"01234567456".indexOf("456");
+""", 4)
+
+tester.add_test("""
+"01234567456".indexOf("456", 9);
+""", -1)
+
+tester.add_test("""
+"45674567".lastIndexOf("456");
+""", 4)
+
+tester.add_test("""
+"45674567".lastIndexOf("456", 3);
+""", 0)
+
+tester.add_test("""
+"45674567".lastIndexOf("456", 4);
+""", 4)
+
+tester.add_test("""
+"ab,cd,efgh".split(",").join(" ");
+""", "ab cd efgh")
+
+tester.add_test("""
+"abcdef".split()[0];
+""", "abcdef")
+
+tester.add_test("""
+"abcdef".split("").join(" ");
+""", "a b c d e f")
+
+tester.add_test("""
+"012345678".substring(3, 6);
+""", "345")
+
+tester.add_test("""
+"012345678".substring(3);
+""", "345678")
+
+tester.add_test("""
+"012345678".substring(7, 3);
+""", "3456")
+
+tester.add_test("""
+"012345678".substring(-4, 100);
+""", "012345678")
+
+tester.add_test("""
+"abcDEF".toUpperCase();
+""", "ABCDEF")
+
+tester.add_test("""
+"abcDEF".toLowerCase();
+""", "abcdef")
 
 tester.run_tests()
