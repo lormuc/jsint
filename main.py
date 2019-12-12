@@ -5,7 +5,6 @@ from enum import Enum
 import math
 import copy
 import sys
-from inspect import signature
 import traceback
 
 class t_loc:
@@ -1172,6 +1171,52 @@ def global_array_init(_):
     _.global_object.put("Array", array_ctor)
 
 
+def call_boolean_constructor(_, this, args):
+    return to_boolean(arg_get(args, 0))
+
+
+def construct_boolean(_, args, unused=None):
+    res = t_js_object()
+    res.put_internal("prototype", _.boolean_prototype)
+    res.put_internal("class", "Boolean")
+    res.put_internal("value", to_boolean(arg_get(args, 0)))
+    return res
+
+
+def boolean_prototype_to_string(_, this, args):
+    if this.get_internal("value") == js_true:
+        return "true"
+    else:
+        return "false"
+
+
+def boolean_prototype_value_of(_, this, args):
+    return this.get_internal("value")
+
+
+def global_boolean_init(_):
+    ctor = t_js_object()
+    ctor.put_internal("prototype", _.function_prototype)
+    ctor.put_internal("class", "Function")
+    ctor.put_internal("call", call_boolean_constructor)
+    ctor.put_internal("construct", construct_boolean)
+    ctor.put("length", t_js_number(1), length_attrs)
+
+    bp = t_js_object()
+    bp.put_internal("prototype", _.object_prototype)
+    bp.put_internal("class", "Boolean")
+    bp.put_internal("value", js_false)
+    bp.put("constructor", ctor, non_length_attrs)
+    put_native_method(_, bp, "toString", boolean_prototype_to_string)
+    put_native_method(_, bp, "valueOf", boolean_prototype_value_of)
+    _.boolean_prototype = bp
+
+    attrs = {"dont_enum", "dont_delete", "read_only"}
+    ctor.put("prototype", _.boolean_prototype, attrs)
+
+    _.global_object.put("Boolean", ctor, non_length_attrs)
+
+
 class t_js_state:
     def __init__(_):
         _.global_object = t_js_object()
@@ -1189,6 +1234,7 @@ class t_js_state:
         global_object_init(_)
         global_array_init(_)
         global_string_init(_)
+        global_boolean_init(_)
 
         put_native_method(_, _.global_object, "eval", js_eval, 1)
 
@@ -1549,9 +1595,12 @@ def to_string(_, value):
 def to_object(_, value):
     if type(value) is t_js_undefined or type(value) is t_js_null:
         raise t_runtime_error()
-    # todo
     if type(value) is t_js_string:
         return construct_string(_, [value])
+    if type(value) is t_js_boolean:
+        return construct_boolean(_, [value])
+    if type(value) is t_js_number:
+        return construct_number(_, [value])
     if type(value) is t_js_object:
         return value
 
@@ -2740,5 +2789,45 @@ tester.add_test("""
 tester.add_test("""
 "abcDEF".toLowerCase();
 """, "abcdef")
+
+tester.add_test("""
+(new Boolean()).valueOf();
+""", js_false)
+
+tester.add_test("""
+Boolean(0);
+""", js_false)
+
+tester.add_test("""
+false.toString();
+""", "false")
+
+tester.add_test("""
+true.toString();
+""", "true")
+
+tester.add_test("""
+true.valueOf();
+""", js_true)
+
+tester.add_test("""
+Boolean.prototype.constructor.length;
+""", 1)
+
+tester.add_test("""
+typeof Boolean;
+""", "function")
+
+tester.add_test("""
+typeof Boolean;
+""", "function")
+
+tester.add_test("""
+Boolean();
+""", js_false)
+
+tester.add_test("""
+(new Boolean("")).valueOf();
+""", js_false)
 
 tester.run_tests()
