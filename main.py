@@ -1217,6 +1217,87 @@ def global_boolean_init(_):
     _.global_object.put("Boolean", ctor, non_length_attrs)
 
 
+def call_number_constructor(_, this, args):
+    if args == []:
+        return t_js_number(0)
+    return to_number(_, args[0])
+
+
+def construct_number(_, args, unused=None):
+    res = t_js_object()
+    res.put_internal("prototype", _.number_prototype)
+    res.put_internal("class", "Number")
+    value = to_number(_, args[0]) if args != [] else t_js_number(0)
+    res.put_internal("value", value)
+    return res
+
+
+def reverse_string(string):
+    return string[::-1]
+
+
+def number_prototype_to_string(_, this, args):
+    radix = arg_get(args, 0)
+    if radix == t_js_number(10) or radix == js_undefined:
+        return to_string(_, this.get_internal("value"))
+    if int(radix) in range(2, 37):
+        digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+        value = this.get_internal("value")
+        res = ""
+        if value < 0:
+            value = -value
+            res += "-"
+        int_part = int(value)
+        frac_part = value - int_part
+
+        int_part_str = ""
+        while int_part != 0:
+            digit = int(int_part % radix)
+            int_part_str += digits[digit]
+            int_part //= radix
+        res += reverse_string(int_part_str)
+        if frac_part != 0:
+            res += "."
+            while frac_part != 0:
+                frac_part *= radix
+                digit = int(frac_part)
+                res += digits[digit]
+                frac_part -= digit
+        return res
+
+
+def number_prototype_value_of(_, this, args):
+    return this.get_internal("value")
+
+
+def global_number_init(_):
+    ctor = t_js_object()
+    ctor.put_internal("prototype", _.function_prototype)
+    ctor.put_internal("class", "Function")
+    ctor.put_internal("call", call_number_constructor)
+    ctor.put_internal("construct", construct_number)
+    ctor.put("length", t_js_number(1), length_attrs)
+
+    proto = t_js_object()
+    proto.put_internal("prototype", _.object_prototype)
+    proto.put_internal("class", "Number")
+    proto.put_internal("value", t_js_number(0))
+    proto.put("constructor", ctor, non_length_attrs)
+    put_native_method(_, proto, "toString", number_prototype_to_string, 1)
+    put_native_method(_, proto, "valueOf", number_prototype_value_of)
+    _.number_prototype = proto
+
+    attrs = {"dont_enum", "dont_delete", "read_only"}
+    ctor.put("prototype", _.number_prototype, attrs)
+    ctor.put("MAX_VALUE", sys.float_info.max, attrs)
+    ctor.put("MIN_VALUE", sys.float_info.min * sys.float_info.epsilon, attrs)
+    ctor.put("NaN", float("nan"), attrs)
+    ctor.put("NEGATIVE_INFINITY", -math.inf, attrs)
+    ctor.put("POSITIVE_INFINITY", math.inf, attrs)
+
+    _.global_object.put("Number", ctor, non_length_attrs)
+
+
 class t_js_state:
     def __init__(_):
         _.global_object = t_js_object()
@@ -1235,6 +1316,7 @@ class t_js_state:
         global_array_init(_)
         global_string_init(_)
         global_boolean_init(_)
+        global_number_init(_)
 
         put_native_method(_, _.global_object, "eval", js_eval, 1)
 
@@ -2829,5 +2911,73 @@ Boolean();
 tester.add_test("""
 (new Boolean("")).valueOf();
 """, js_false)
+
+tester.add_test("""
+Number();
+""", t_js_number(0))
+
+tester.add_test("""
+Number("123");
+""", t_js_number(123))
+
+tester.add_test("""
+(new Number("123")).valueOf();
+""", t_js_number(123))
+
+tester.add_test("""
+(new Number()).valueOf();
+""", t_js_number(0))
+
+tester.add_test("""
+345.345.toString();
+""", "345.345")
+
+tester.add_test("""
+345.0.toString(10);
+""", "345")
+
+tester.add_test("""
+0x345abc.toString(16);
+""", "345abc")
+
+tester.add_test("""
+(-0xaaaa).toString(2);
+""", "-1010101010101010")
+
+tester.add_test("""
+Number.length;
+""", t_js_number(1))
+
+tester.add_test("""
+Number.prototype.valueOf();
+""", t_js_number(0))
+
+tester.add_test("""
+Number.prototype.constructor == Number;
+""", js_true)
+
+tester.add_test("""
+Number.MAX_VALUE;
+""", t_js_number(sys.float_info.max))
+
+tester.add_test("""
+Number.MIN_VALUE / 2;
+""", t_js_number(0))
+
+tester.add_test("""
+Number.MIN_VALUE.toString();
+""", "5e-324")
+
+tester.add_test("""
+Number.NaN != Number.NaN;
+""", js_true)
+
+tester.add_test("""
+Number.NEGATIVE_INFINITY;
+""", -math.inf)
+
+tester.add_test("""
+Number.POSITIVE_INFINITY;
+""", math.inf)
 
 tester.run_tests()
