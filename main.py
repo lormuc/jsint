@@ -1,11 +1,11 @@
 #!/usr/bin/python3
 
 from collections import namedtuple
-from enum import Enum
 import math
 import copy
 import sys
 import traceback
+import random
 
 class t_loc:
     def __init__(_):
@@ -1298,6 +1298,136 @@ def global_number_init(_):
     _.global_object.put("Number", ctor, non_length_attrs)
 
 
+def math_abs(_, this, args):
+    x = to_number(_, arg_get(args, 0))
+    return abs(x)
+
+
+def math_acos(_, this, args):
+    x = to_number(_, arg_get(args, 0))
+    return math.acos(x)
+
+
+def math_asin(_, this, args):
+    x = to_number(_, arg_get(args, 0))
+    return math.asin(x)
+
+
+def math_atan(_, this, args):
+    x = to_number(_, arg_get(args, 0))
+    return math.atan(x)
+
+
+def math_atan_2(_, this, args):
+    y = to_number(_, arg_get(args, 0))
+    x = to_number(_, arg_get(args, 1))
+    return math.atan2(y, x)
+
+
+def math_ceil(_, this, args):
+    x = to_number(_, arg_get(args, 0))
+    return math.ceil(x)
+
+
+def math_cos(_, this, args):
+    x = to_number(_, arg_get(args, 0))
+    return math.cos(x)
+
+
+def math_exp(_, this, args):
+    x = to_number(_, arg_get(args, 0))
+    return math.exp(x)
+
+
+def math_floor(_, this, args):
+    x = to_number(_, arg_get(args, 0))
+    return t_js_number(math.floor(x))
+
+
+def math_log(_, this, args):
+    x = to_number(_, arg_get(args, 0))
+    return math.log(x)
+
+
+def math_max(_, this, args):
+    x = to_number(_, arg_get(args, 0))
+    y = to_number(_, arg_get(args, 1))
+    return max(x, y)
+
+
+def math_min(_, this, args):
+    x = to_number(_, arg_get(args, 0))
+    y = to_number(_, arg_get(args, 1))
+    return min(x, y)
+
+
+def math_pow(_, this, args):
+    x = to_number(_, arg_get(args, 0))
+    y = to_number(_, arg_get(args, 1))
+    return pow(x, y)
+
+
+def math_random(_, this, args):
+    return random.random()
+
+
+def math_round(_, this, args):
+    x = to_number(_, arg_get(args, 0))
+    if x == -0.0 or (x >= -0.5 and x < 0):
+        return -0.0
+    return t_js_number(math.floor(x + 0.5))
+
+
+def math_sin(_, this, args):
+    x = to_number(_, arg_get(args, 0))
+    return math.sin(x)
+
+
+def math_sqrt(_, this, args):
+    x = to_number(_, arg_get(args, 0))
+    return math.sqrt(x)
+
+
+def math_tan(_, this, args):
+    x = to_number(_, arg_get(args, 0))
+    return math.tan(x)
+
+
+def global_math_init(_):
+    obj = t_js_object()
+    obj.put_internal("prototype", _.object_prototype)
+    obj.put_internal("class", "Math")
+    attrs = {"dont_enum", "dont_delete", "read_only"}
+    obj.put("E", math.e, attrs)
+    obj.put("LN10", math.log(10), attrs)
+    obj.put("LN2", math.log(2), attrs)
+    obj.put("LOG2E", math.log(math.e, 2), attrs)
+    obj.put("LOG10E", math.log(math.e, 10), attrs)
+    obj.put("PI", math.pi, attrs)
+    obj.put("SQRT1_2", math.sqrt(1/2), attrs)
+    obj.put("SQRT2", math.sqrt(2), attrs)
+    put_native_method(_, obj, "abs", math_abs, 1)
+    put_native_method(_, obj, "acos", math_acos, 1)
+    put_native_method(_, obj, "asin", math_asin, 1)
+    put_native_method(_, obj, "atan", math_atan, 1)
+    put_native_method(_, obj, "atan2", math_atan_2, 2)
+    put_native_method(_, obj, "ceil", math_ceil, 1)
+    put_native_method(_, obj, "cos", math_cos, 1)
+    put_native_method(_, obj, "exp", math_exp, 1)
+    put_native_method(_, obj, "floor", math_floor, 1)
+    put_native_method(_, obj, "log", math_log, 1)
+    put_native_method(_, obj, "max", math_max, 2)
+    put_native_method(_, obj, "min", math_min, 2)
+    put_native_method(_, obj, "pow", math_pow, 2)
+    put_native_method(_, obj, "random", math_random)
+    put_native_method(_, obj, "round", math_round, 1)
+    put_native_method(_, obj, "sin", math_sin, 1)
+    put_native_method(_, obj, "sqrt", math_sqrt, 1)
+    put_native_method(_, obj, "tan", math_tan, 1)
+
+    _.global_object.put("Math", obj, attrs)
+
+
 class t_js_state:
     def __init__(_):
         _.global_object = t_js_object()
@@ -1317,6 +1447,7 @@ class t_js_state:
         global_string_init(_)
         global_boolean_init(_)
         global_number_init(_)
+        global_math_init(_)
 
         put_native_method(_, _.global_object, "eval", js_eval, 1)
 
@@ -2283,7 +2414,7 @@ def create_function(_, params, body, name="", body_string=""):
 
 
 def put_native_method(_, o, name, func, length=0):
-    o.put(name, create_native_function(_, func, length))
+    o.put(name, create_native_function(_, func, length), {"dont_enum"})
 
 
 def eval_program(_, ast):
@@ -2979,5 +3110,123 @@ Number.NEGATIVE_INFINITY;
 tester.add_test("""
 Number.POSITIVE_INFINITY;
 """, math.inf)
+
+tester.add_test("""
+Math.toString();
+""", "[object Math]")
+
+tester.add_test("""
+Math.E;
+""", math.e)
+
+tester.add_test("""
+Math.LN10;
+""", math.log(10))
+
+tester.add_test("""
+Math.LN2;
+""", math.log(2))
+
+tester.add_test("""
+Math.LOG2E;
+""", math.log(math.e, 2))
+
+tester.add_test("""
+Math.LOG10E;
+""", math.log(math.e, 10))
+
+tester.add_test("""
+Math.PI;
+""", math.pi)
+
+tester.add_test("""
+Math.SQRT1_2;
+""", math.sqrt(1/2))
+
+tester.add_test("""
+Math.SQRT2;
+""", math.sqrt(2))
+
+tester.add_test("""
+Math.abs(-0.0);
+""", 0.0)
+
+tester.add_test("""
+Math.abs(-4.5);
+""", 4.5)
+
+tester.add_test("""
+Math.abs(-Infinity);
+""", math.inf)
+
+tester.add_test("""
+Math.acos(0.5);
+""", math.acos(0.5))
+
+tester.add_test("""
+Math.asin(0.5);
+""", math.asin(0.5))
+
+tester.add_test("""
+Math.atan2(1, 2);
+""", math.atan2(1, 2))
+
+tester.add_test("""
+Math.ceil(-1.5);
+""", -1.0)
+
+tester.add_test("""
+Math.cos(0.5);
+""", math.cos(0.5))
+
+tester.add_test("""
+Math.exp(0.5);
+""", math.exp(0.5))
+
+tester.add_test("""
+Math.floor(4.5);
+""", 4.0)
+
+tester.add_test("""
+Math.log(0.5);
+""", math.log(0.5))
+
+tester.add_test("""
+Math.max(-4, 9);
+""", 9.0)
+
+tester.add_test("""
+Math.min(-4, 9);
+""", -4.0)
+
+tester.add_test("""
+Math.pow(0.5, 2);
+""", 0.25)
+
+tester.add_test("""
+var x = Math.random();
+var y = Math.random();
+0 <= x && x < 1 && 0 <= y && y < 1;
+""", js_true)
+
+tester.add_test("""
+Math.round(3.5);
+""", 4.0)
+
+tester.add_test("""
+Math.round(-3.5);
+""", -3.0)
+
+tester.add_test("""
+Math.sin(0.5);
+""", math.sin(0.5))
+
+tester.add_test("""
+Math.sqrt(0.5);
+""", math.sqrt(0.5))
+
+tester.add_test("""
+Math.tan(0.5);
+""", math.tan(0.5))
 
 tester.run_tests()
