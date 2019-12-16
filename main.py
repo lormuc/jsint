@@ -7,6 +7,9 @@ import sys
 import traceback
 import random
 
+whitespace_chars = "\t \f\v\r\n"
+nan = float("nan")
+
 class t_loc:
     def __init__(_):
         _.line = 1
@@ -834,6 +837,52 @@ def js_eval(_, this, args):
     return js_undefined
 
 
+def is_radix_digit(char, radix):
+    if char == "" or ord(char) >= 128:
+        return False
+    radix = int(radix)
+    assert radix in range(2, 37)
+    x = ord(char.lower())
+    zero = ord("0")
+    if radix <= 10:
+        return x in range(zero, zero + radix)
+    if x in range(zero, zero + 10):
+        return True
+    return x in range(ord("a"), ord("a") + radix - 10)
+
+
+def parse_int(_, this, args):
+    string = arg_get(args, 0)
+    radix = arg_get(args, 1)
+    string = to_string(_, string)
+    string = string.lstrip(whitespace_chars)
+    sign = 1.0
+    if string != "" and string[0] == "-":
+        sign = -1.0
+    if string != "" and string[0] in ["+", "-"]:
+        string = string[1:]
+    radix = to_int_32(_, radix)
+    if radix == 0:
+        radix = 10.0
+        if string[:2] in ["0x", "0X"]:
+            string = string[2:]
+            radix = 16.0
+    elif radix < 2 or radix > 36:
+        return nan
+    elif radix == 16:
+        if string[:2] in ["0x", "0X"]:
+            string = string[2:]
+    k = 0
+    while k < len(string) and is_radix_digit(string[k], radix):
+        k += 1
+    if k == 0:
+        return nan
+    string = string[:k]
+    res = t_js_number(int(string, base=int(radix)))
+    res = sign * res
+    return res
+
+
 def empty_function(_, this, args):
     return js_undefined
 
@@ -1450,6 +1499,7 @@ class t_js_state:
         global_math_init(_)
 
         put_native_method(_, _.global_object, "eval", js_eval, 1)
+        put_native_method(_, _.global_object, "parseInt", parse_int, 2)
 
         _.exec_contexts = []
 
@@ -3228,5 +3278,26 @@ Math.sqrt(0.5);
 tester.add_test("""
 Math.tan(0.5);
 """, math.tan(0.5))
+
+tester.add_test("""
+parseInt("   -0x0a#$%");
+""", -10.0)
+
+tester.add_test("""
+parseInt("10", 7);
+""", 7.0)
+
+tester.add_test("""
+var x = parseInt("abc", 7);
+x != x;
+""", js_true)
+
+tester.add_test("""
+parseInt("+123");
+""", 123.0)
+
+tester.add_test("""
+parseInt.length;
+""", 2.0)
 
 tester.run_tests()
