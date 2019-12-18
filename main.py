@@ -6,6 +6,7 @@ import copy
 import sys
 import traceback
 import random
+import time
 
 whitespace_chars = "\t \f\v\r\n"
 nan = float("nan")
@@ -1477,6 +1478,244 @@ def global_math_init(_):
     _.global_object.put("Math", obj, attrs)
 
 
+ms_per_day = 86400000
+
+
+def day_from_time(t):
+    return t // ms_per_day
+
+
+def time_within_day(t):
+    return t % ms_per_day
+
+
+def days_in_year(year):
+    if year % 4 != 0:
+        return 365
+    if year % 25 != 0:
+        return 366
+    if year % 16 != 0:
+        return 365
+    return 366
+
+
+def day_from_year(y):
+    leap_days = (y - 1969) // 4 - (y - 1901) // 100 + (y - 1601) // 400
+    return 365 * (y - 1970) + leap_days
+
+
+def time_from_year(year):
+    return ms_per_day * day_from_year(year)
+
+
+def year_from_time(t):
+    p = t // ms_per_day + 719162
+    a = p // 146097
+    w = p - 146097 * a
+    c = min(3, w // 36524)
+    u = w - c * 36524
+    e = min(24, u // 1461)
+    v = u - 1461 * e
+    f = min(3, v // 365)
+    return 400 * a + 100 * c + 4 * e + f + 1
+
+
+def in_leap_year(t):
+    return days_in_year(year_from_time(t)) == 366
+
+
+def day_within_year(t):
+    return day_from_time(t) - day_from_year(year_from_time(t))
+
+
+def month_from_time(t):
+    leap = in_leap_year(t)
+    day = day_within_year(t)
+    if day in range(0, 31):
+        return 0
+    if day in range(31, 59 + leap):
+        return 1
+    if day in range(59 + leap, 90 + leap):
+        return 2
+    if day in range(90 + leap, 120 + leap):
+        return 3
+    if day in range(120 + leap, 151 + leap):
+        return 4
+    if day in range(151 + leap, 181 + leap):
+        return 5
+    if day in range(181 + leap, 212 + leap):
+        return 6
+    if day in range(212 + leap, 243 + leap):
+        return 7
+    if day in range(243 + leap, 273 + leap):
+        return 8
+    if day in range(273 + leap, 304 + leap):
+        return 9
+    if day in range(304 + leap, 334 + leap):
+        return 10
+    if day in range(334 + leap, 365 + leap):
+        return 11
+
+
+def day_from_month(month, year):
+    leap = (days_in_year(year) == 366)
+    table = [
+        0,
+        31,
+        59 + leap,
+        90 + leap,
+        120 + leap,
+        151 + leap,
+        181 + leap,
+        212 + leap,
+        243 + leap,
+        273 + leap,
+        304 + leap,
+        334 + leap
+    ]
+    return table[int(month)]
+
+
+def week_day(t):
+    return (day(t) + 4) % 7
+
+
+def local_time_zone_adjustment():
+    return -1 * time.timezone * 1000
+
+
+def summer_time_adjustment(t):
+    return 0.0
+
+
+def local_time(t):
+    return t + local_time_zone_adjustment() + summer_time_adjustment(t)
+
+
+def utc(t):
+    tza = local_time_zone_adjustment()
+    return t - tza - summer_time_adjustment(t - tza)
+
+
+hours_per_day = 24
+minutes_per_hour = 60
+seconds_per_minute = 60
+ms_per_second = 1000
+ms_per_minute = ms_per_second * seconds_per_minute
+ms_per_hour = ms_per_minute * minutes_per_hour
+
+
+def hours_from_time(t):
+    return (t // ms_per_hour) % hours_per_day
+
+
+def min_from_time(t):
+    return (t // ms_per_minute) % minutes_per_hour
+
+
+def sec_from_time(t):
+    return (t // ms_per_second) % seconds_per_minute
+
+
+def ms_from_time(t):
+    return t % ms_per_second
+
+
+def is_finite(x):
+    return not is_nan(x) and x != math.inf and x != -math.inf
+
+
+def make_time(_, hour, minute, second, millisecond):
+    if not all(is_finite(x) for x in (hour, minute, second, millisecond)):
+        return nan
+    hour = to_integer(_, hour)
+    minute = to_integer(_, minute)
+    second = to_integer(_, second)
+    millisecond = to_integer(_, millisecond)
+    res = hour * ms_per_hour + minute * ms_per_minute + second * ms_per_second
+    res += millisecond
+    return res
+
+
+def make_day(_, year, month, date):
+    if not all(is_finite(x) for x in (year, month, date)):
+        return nan
+    year = to_integer(_, year)
+    month = to_integer(_, month)
+    date = to_integer(_, date)
+    year += month // 12
+    month %= 12
+    return day_from_year(year) + day_from_month(month, year) + date - 1
+
+
+def make_date(day, t):
+    if not all(is_finite(x) for x in (day, t)):
+        return nan
+    return day * ms_per_day + t
+
+
+def time_clip(_, t):
+    if not is_finite(t):
+        return nan
+    if abs(t) > 8.64e15:
+        return nan
+    return to_integer(_, t) + (+0.0)
+
+
+def call_date_constructor(_, this, args):
+    pass
+
+
+def construct_date(_, args, unused=None):
+    res = t_js_object()
+    res.put_internal("prototype", _.date_prototype)
+    res.put_internal("class", "Date")
+    value = None
+    if len(args) >= 2:
+        year = to_number(_, args[0])
+        month = to_number(_, args[1])
+        date = to_number(_, args[2]) if len(args) >= 3 else 1.0
+        hours = to_number(_, args[3]) if len(args) >= 4 else 0.0
+        minutes = to_number(_, args[4]) if len(args) >= 5 else 0.0
+        seconds = to_number(_, args[5]) if len(args) >= 6 else 0.0
+        ms = to_number(_, args[6]) if len(args) >= 7 else 0.0
+        if not is_nan(year):
+            i = to_integer(_, year)
+            if int(i) in range(0, 100):
+                year = 1900 + i
+        day = make_day(_, year, month, date)
+        date = make_date(day, make_time(_, hours, minutes, seconds, ms))
+        value = time_clip(_, utc(date))
+    res.put_internal("value", value)
+    return res
+
+
+def date_prototype_value_of(_, this, args):
+    return this.get_internal("value")
+
+
+def global_date_init(_):
+    ctor = t_js_object()
+    ctor.put_internal("prototype", _.function_prototype)
+    ctor.put_internal("class", "Function")
+    ctor.put_internal("call", call_date_constructor)
+    ctor.put_internal("construct", construct_date)
+    ctor.put("length", t_js_number(7), length_attrs)
+
+    proto = t_js_object()
+    proto.put_internal("prototype", _.object_prototype)
+    proto.put_internal("class", "Date")
+    proto.put_internal("value", nan)
+    proto.put("constructor", ctor, non_length_attrs)
+    put_native_method(_, proto, "valueOf", date_prototype_value_of)
+    _.date_prototype = proto
+
+    attrs = {"dont_enum", "dont_delete", "read_only"}
+    ctor.put("prototype", _.date_prototype, attrs)
+
+    _.global_object.put("Date", ctor, non_length_attrs)
+
+
 class t_js_state:
     def __init__(_):
         _.global_object = t_js_object()
@@ -1497,6 +1736,7 @@ class t_js_state:
         global_boolean_init(_)
         global_number_init(_)
         global_math_init(_)
+        global_date_init(_)
 
         put_native_method(_, _.global_object, "eval", js_eval, 1)
         put_native_method(_, _.global_object, "parseInt", parse_int, 2)
@@ -3299,5 +3539,10 @@ parseInt("+123");
 tester.add_test("""
 parseInt.length;
 """, 2.0)
+
+tester.add_test("""
+var x = (new Date(2100, 3, 3, 3)).valueOf() / 86400000;
+Math.abs(x - 47574) < 2;
+""", js_true)
 
 tester.run_tests()
