@@ -7,6 +7,7 @@ import sys
 import traceback
 import random
 import time
+import datetime
 
 whitespace_chars = "\t \f\v\r\n"
 nan = float("nan")
@@ -56,11 +57,11 @@ def print_lexemes(l):
     print([(i.value, i.loc) for i in l])
 
 def is_identifier_char(ch):
-    return len(ch) == 1 and ((ch.isascii() and ch.isalnum()) or (ch in "$_"))
+    return len(ch) == 1 and ((ord(ch) < 128 and ch.isalnum()) or (ch in "$_"))
 
 
 def is_digit(ch):
-    return len(ch) == 1 and ch.isascii() and ch.isdigit()
+    return len(ch) == 1 and ord(ch) < 128 and ch.isdigit()
 
 
 def is_octal_digit(ch):
@@ -1531,30 +1532,32 @@ def day_within_year(t):
 def month_from_time(t):
     leap = in_leap_year(t)
     day = day_within_year(t)
+    x = None
     if day in range(0, 31):
-        return 0
+        x = 0
     if day in range(31, 59 + leap):
-        return 1
+        x = 1
     if day in range(59 + leap, 90 + leap):
-        return 2
+        x = 2
     if day in range(90 + leap, 120 + leap):
-        return 3
+        x = 3
     if day in range(120 + leap, 151 + leap):
-        return 4
+        x = 4
     if day in range(151 + leap, 181 + leap):
-        return 5
+        x = 5
     if day in range(181 + leap, 212 + leap):
-        return 6
+        x = 6
     if day in range(212 + leap, 243 + leap):
-        return 7
+        x = 7
     if day in range(243 + leap, 273 + leap):
-        return 8
+        x = 8
     if day in range(273 + leap, 304 + leap):
-        return 9
+        x = 9
     if day in range(304 + leap, 334 + leap):
-        return 10
+        x = 10
     if day in range(334 + leap, 365 + leap):
-        return 11
+        x = 11
+    return t_js_number(x)
 
 
 def day_from_month(month, year):
@@ -1576,12 +1579,37 @@ def day_from_month(month, year):
     return table[int(month)]
 
 
+def date_from_time(t):
+    leap = in_leap_year(t)
+    day = day_within_year(t)
+    table = [
+        day + 1,
+        day - 30,
+        day - 58 - leap,
+        day - 89 - leap,
+        day - 119 - leap,
+        day - 150 - leap,
+        day - 180 - leap,
+        day - 211 - leap,
+        day - 242 - leap,
+        day - 272 - leap,
+        day - 303 - leap,
+        day - 333 - leap
+    ]
+    return t_js_number(table[int(month_from_time(t))])
+
+
 def week_day(t):
     return (day(t) + 4) % 7
 
 
 def local_time_zone_adjustment():
     return -1 * time.timezone * 1000
+
+
+def get_local_timezone():
+    x = datetime.datetime.now(datetime.timezone(datetime.timedelta(0)))
+    return x.astimezone().tzinfo
 
 
 def summer_time_adjustment(t):
@@ -1605,7 +1633,7 @@ ms_per_minute = ms_per_second * seconds_per_minute
 ms_per_hour = ms_per_minute * minutes_per_hour
 
 
-def hours_from_time(t):
+def hour_from_time(t):
     return (t // ms_per_hour) % hours_per_day
 
 
@@ -1662,8 +1690,32 @@ def time_clip(_, t):
     return to_integer(_, t) + (+0.0)
 
 
-def call_date_constructor(_, this, args):
-    pass
+def get_current_utc_time():
+    return float(math.floor(time.time() * 1000))
+
+
+def build_date(_, args):
+    if args == []:
+        return nan
+    year = to_number(_, args[0])
+    month = to_number(_, args[1]) if len(args) >= 2 else 0.0
+    date = to_number(_, args[2]) if len(args) >= 3 else 1.0
+    hours = to_number(_, args[3]) if len(args) >= 4 else 0.0
+    minutes = to_number(_, args[4]) if len(args) >= 5 else 0.0
+    seconds = to_number(_, args[5]) if len(args) >= 6 else 0.0
+    ms = to_number(_, args[6]) if len(args) >= 7 else 0.0
+    if not is_nan(year):
+        i = to_integer(_, year)
+        if int(i) in range(0, 100):
+            year = 1900 + i
+    day = make_day(_, year, month, date)
+    return make_date(day, make_time(_, hours, minutes, seconds, ms))
+
+
+def date_parse(_, this, args):
+    string = to_string(_, arg_get(args, 0))
+    x = datetime.datetime.strptime(string, date_format).timestamp()
+    return float(math.floor(x * 1000))
 
 
 def construct_date(_, args, unused=None):
@@ -1672,26 +1724,296 @@ def construct_date(_, args, unused=None):
     res.put_internal("class", "Date")
     value = None
     if len(args) >= 2:
-        year = to_number(_, args[0])
-        month = to_number(_, args[1])
-        date = to_number(_, args[2]) if len(args) >= 3 else 1.0
-        hours = to_number(_, args[3]) if len(args) >= 4 else 0.0
-        minutes = to_number(_, args[4]) if len(args) >= 5 else 0.0
-        seconds = to_number(_, args[5]) if len(args) >= 6 else 0.0
-        ms = to_number(_, args[6]) if len(args) >= 7 else 0.0
-        if not is_nan(year):
-            i = to_integer(_, year)
-            if int(i) in range(0, 100):
-                year = 1900 + i
-        day = make_day(_, year, month, date)
-        date = make_date(day, make_time(_, hours, minutes, seconds, ms))
-        value = time_clip(_, utc(date))
+        value = time_clip(_, utc(build_date(_, args)))
+    elif len(args) == 1:
+        value = to_primitive(_, args[0])
+        if type(value) is t_js_string:
+            value = date_parse(_, None, [value])
+        else:
+            value = to_number(_, value)
+        value = time_clip(_, value)
+    elif len(args) == 0:
+        value = get_current_utc_time()
     res.put_internal("value", value)
     return res
 
 
+def call_date_constructor(_, this, args):
+    return date_prototype_to_string(_, construct_date(_, []), [])
+
+
 def date_prototype_value_of(_, this, args):
     return this.get_internal("value")
+
+
+def date_utc(_, this, args):
+    return build_date(_, args)
+
+
+def date_prototype_get_time(_, this, args):
+    return this.get_internal("value")
+
+
+def date_prototype_get_full_year(_, this, args):
+    t = this.get_internal("value")
+    if is_nan(t):
+        return nan
+    return year_from_time(local_time(t))
+
+
+def date_prototype_get_utc_full_year(_, this, args):
+    t = this.get_internal("value")
+    if is_nan(t):
+        return nan
+    return year_from_time(t)
+
+
+def date_prototype_get_month(_, this, args):
+    t = this.get_internal("value")
+    if is_nan(t):
+        return nan
+    return month_from_time(local_time(t))
+
+
+def date_prototype_get_utc_month(_, this, args):
+    t = this.get_internal("value")
+    if is_nan(t):
+        return nan
+    return month_from_time(t)
+
+
+def date_prototype_get_date(_, this, args):
+    t = this.get_internal("value")
+    if is_nan(t):
+        return nan
+    return date_from_time(local_time(t))
+
+
+def date_prototype_get_utc_date(_, this, args):
+    t = this.get_internal("value")
+    if is_nan(t):
+        return nan
+    return date_from_time(t)
+
+
+def date_prototype_get_day(_, this, args):
+    t = this.get_internal("value")
+    if is_nan(t):
+        return nan
+    return week_day(local_time(t))
+
+
+def date_prototype_get_utc_day(_, this, args):
+    t = this.get_internal("value")
+    if is_nan(t):
+        return nan
+    return week_day(t)
+
+
+def date_prototype_get_hours(_, this, args):
+    t = this.get_internal("value")
+    if is_nan(t):
+        return nan
+    return hour_from_time(local_time(t))
+
+
+def date_prototype_get_utc_hours(_, this, args):
+    t = this.get_internal("value")
+    if is_nan(t):
+        return nan
+    return hour_from_time(t)
+
+
+def date_prototype_get_minutes(_, this, args):
+    t = this.get_internal("value")
+    if is_nan(t):
+        return nan
+    return min_from_time(local_time(t))
+
+
+def date_prototype_get_utc_minutes(_, this, args):
+    t = this.get_internal("value")
+    if is_nan(t):
+        return nan
+    return min_from_time(t)
+
+
+def date_prototype_get_seconds(_, this, args):
+    t = this.get_internal("value")
+    if is_nan(t):
+        return nan
+    return sec_from_time(local_time(t))
+
+
+def date_prototype_get_utc_seconds(_, this, args):
+    t = this.get_internal("value")
+    if is_nan(t):
+        return nan
+    return sec_from_time(t)
+
+
+def date_prototype_get_milliseconds(_, this, args):
+    t = this.get_internal("value")
+    if is_nan(t):
+        return nan
+    return ms_from_time(local_time(t))
+
+
+def date_prototype_get_utc_milliseconds(_, this, args):
+    t = this.get_internal("value")
+    if is_nan(t):
+        return nan
+    return ms_from_time(t)
+
+
+def date_prototype_get_timezone_offset(_, this, args):
+    t = this.get_internal("value")
+    if is_nan(t):
+        return nan
+    return (t - local_time(t)) / ms_per_minute
+
+
+def date_prototype_set_time(_, this, args):
+    t = arg_get(args, 0)
+    this.put_internal("value", time_clip(_, to_number(_, t)))
+    return this.get_internal("value")
+
+
+def date_set(_, this, is_utc, **kwargs):
+    t = this.get_internal("value")
+    if not is_utc:
+        t = local_time(t)
+    year = kwargs.get("year")
+    month = kwargs.get("month")
+    date = kwargs.get("date")
+    value_day = None
+    if (year is None) and (month is None) and (date is None):
+        value_day = day_from_time(t)
+    else:
+        year = to_number(_, year or year_from_time(t))
+        month = to_number(_, month or month_from_time(t))
+        date = to_number(_, date or date_from_time(t))
+        value_day = make_day(_, year, month, date)
+
+    hour = kwargs.get("hour")
+    mins = kwargs.get("mins")
+    sec = kwargs.get("sec")
+    ms = kwargs.get("ms")
+    value_time = None
+    if (hour is None) and (mins is None) and (sec is None) and (ms is None):
+        value_time = time_within_day(t)
+    else:
+        hour = to_number(_, hour or hour_from_time(t))
+        mins = to_number(_, mins or min_from_time(t))
+        sec = to_number(_, sec or sec_from_time(t))
+        ms = to_number(_, ms or ms_from_time(t))
+        value_time = make_time(_, hour, mins, sec, ms)
+
+    value = make_date(value_day, value_time)
+    if not is_utc:
+        value = utc(value)
+    value = time_clip(_, value)
+    this.put_internal("value", value)
+    return this.get_internal("value")
+
+
+def date_prototype_set_milliseconds(_, this, args):
+    return date_set(_, this, False, ms=arg_get(args, 0))
+
+
+def date_prototype_set_utc_milliseconds(_, this, args):
+    return date_set(_, this, True, ms=arg_get(args, 0))
+
+
+def arg_get_or_none(args, i):
+    return args[i] if i < len(args) else None
+
+
+def date_prototype_set_seconds(_, this, args):
+    ms = arg_get_or_none(args, 1)
+    return date_set(_, this, False, sec=arg_get(args, 0), ms=ms)
+
+
+def date_prototype_set_utc_seconds(_, this, args):
+    ms = arg_get_or_none(args, 1)
+    return date_set(_, this, True, sec=arg_get(args, 0), ms=ms)
+
+
+def date_prototype_set_minutes(_, this, args):
+    sec = arg_get_or_none(args, 1)
+    ms = arg_get_or_none(args, 2)
+    return date_set(_, this, False, mins=arg_get(args, 0), sec=sec, ms=ms)
+
+
+def date_prototype_set_utc_minutes(_, this, args):
+    sec = arg_get_or_none(args, 1)
+    ms = arg_get_or_none(args, 2)
+    return date_set(_, this, True, mins=arg_get(args, 0), sec=sec, ms=ms)
+
+
+def date_prototype_set_hours(_, this, args):
+    hour = arg_get(args, 0)
+    sec = arg_get_or_none(args, 1)
+    ms = arg_get_or_none(args, 2)
+    mins = arg_get_or_none(args, 3)
+    return date_set(_, this, False, hour=hour, mins=mins, sec=sec, ms=ms)
+
+
+def date_prototype_set_utc_hours(_, this, args):
+    hour = arg_get(args, 0)
+    sec = arg_get_or_none(args, 1)
+    ms = arg_get_or_none(args, 2)
+    mins = arg_get_or_none(args, 3)
+    return date_set(_, this, True, hour=hour, mins=mins, sec=sec, ms=ms)
+
+
+def date_prototype_set_date(_, this, args):
+    return date_set(_, this, False, date=arg_get(args, 0))
+
+
+def date_prototype_set_utc_date(_, this, args):
+    return date_set(_, this, True, date=arg_get(args, 0))
+
+
+def date_prototype_set_month(_, this, args):
+    date = arg_get_or_none(args, 1)
+    return date_set(_, this, False, month=arg_get(args, 0), date=date)
+
+
+def date_prototype_set_utc_month(_, this, args):
+    date = arg_get_or_none(args, 1)
+    return date_set(_, this, True, month=arg_get(args, 0), date=date)
+
+
+def date_prototype_set_full_year(_, this, args):
+    year = arg_get(args, 0)
+    month = arg_get_or_none(args, 1)
+    date = arg_get_or_none(args, 2)
+    return date_set(_, this, False, year=year, month=month, date=date)
+
+
+def date_prototype_set_utc_full_year(_, this, args):
+    year = arg_get(args, 0)
+    month = arg_get_or_none(args, 1)
+    date = arg_get_or_none(args, 2)
+    return date_set(_, this, True, year=year, month=month, date=date)
+
+
+date_format = "%Y-%m-%d %H:%M:%S GMT%z"
+
+
+def date_prototype_to_string(_, this, args):
+    value = this.get_internal("value") / 1000.0
+    tz = get_local_timezone()
+    return datetime.datetime.fromtimestamp(value, tz=tz).strftime(date_format)
+
+
+def date_prototype_to_locale_string(_, this, args):
+    return date_prototype_to_string(_, this, args)
+
+
+def date_prototype_to_utc_string(_, this, args):
+    return date_prototype_to_string(_, this, args)
 
 
 def global_date_init(_):
@@ -1702,12 +2024,71 @@ def global_date_init(_):
     ctor.put_internal("construct", construct_date)
     ctor.put("length", t_js_number(7), length_attrs)
 
+    put_native_method(_, ctor, "parse", date_parse, 1)
+    put_native_method(_, ctor, "UTC", date_utc, 7)
+
     proto = t_js_object()
     proto.put_internal("prototype", _.object_prototype)
     proto.put_internal("class", "Date")
     proto.put_internal("value", nan)
     proto.put("constructor", ctor, non_length_attrs)
-    put_native_method(_, proto, "valueOf", date_prototype_value_of)
+
+    def method(name, func, length=0):
+        put_native_method(_, proto, name, func, length)
+    method("toString", date_prototype_to_string)
+    method("toUTCString", date_prototype_to_utc_string)
+    method("toLocaleString", date_prototype_to_locale_string)
+    method("valueOf", date_prototype_value_of)
+    method("getTime", date_prototype_get_time)
+
+    method("getFullYear", date_prototype_get_full_year)
+    method("getUTCFullYear", date_prototype_get_utc_full_year)
+
+    method("getMonth", date_prototype_get_month)
+    method("getUTCMonth", date_prototype_get_utc_month)
+
+    method("getDate", date_prototype_get_date)
+    method("getUTCDate", date_prototype_get_utc_date)
+
+    method("getDay", date_prototype_get_day)
+    method("getUTCDay", date_prototype_get_utc_day)
+
+    method("getHours", date_prototype_get_hours)
+    method("getUTCHours", date_prototype_get_utc_hours)
+
+    method("getMinutes", date_prototype_get_minutes)
+    method("getUTCMinutes", date_prototype_get_utc_minutes)
+
+    method("getSeconds", date_prototype_get_seconds)
+    method("getUTCSeconds", date_prototype_get_utc_seconds)
+
+    method("getMilliseconds", date_prototype_get_milliseconds)
+    method("getUTCMilliseconds", date_prototype_get_utc_milliseconds)
+
+    method("getTimezoneOffset", date_prototype_get_timezone_offset)
+    method("setTime", date_prototype_set_time, 1)
+
+    method("setMilliseconds", date_prototype_set_milliseconds, 1)
+    method("setUTCMilliseconds", date_prototype_set_utc_milliseconds, 1)
+
+    method("setSeconds", date_prototype_set_seconds, 2)
+    method("setUTCSeconds", date_prototype_set_utc_seconds, 2)
+
+    method("setMinutes", date_prototype_set_minutes, 3)
+    method("setUTCMinutes", date_prototype_set_utc_minutes, 3)
+
+    method("setHours", date_prototype_set_hours, 4)
+    method("setUTCHours", date_prototype_set_utc_hours, 4)
+
+    method("setDate", date_prototype_set_date, 1)
+    method("setUTCDate", date_prototype_set_utc_date, 1)
+
+    method("setMonth", date_prototype_set_month, 2)
+    method("setUTCMonth", date_prototype_set_utc_month, 2)
+
+    method("setFullYear", date_prototype_set_full_year, 3)
+    method("setUTCFullYear", date_prototype_set_utc_full_year, 3)
+
     _.date_prototype = proto
 
     attrs = {"dont_enum", "dont_delete", "read_only"}
@@ -3544,5 +3925,91 @@ tester.add_test("""
 var x = (new Date(2100, 3, 3, 3)).valueOf() / 86400000;
 Math.abs(x - 47574) < 2;
 """, js_true)
+
+tester.add_test("""
+Date.UTC(1970, 0);
+""", 0.0)
+
+tester.add_test("""
+Date.UTC(2010, 3, 4, 5, 6, 7, 8);
+""", 1270357567008.0)
+
+tester.add_test("""
+Date.UTC(2010, 3, 4, 5, 6, 7, 8);
+""", 1270357567008.0)
+
+tester.add_test("""
+Date.parse("1970-01-01 00:00:00 GMT+0000");
+""", 0.0)
+
+tester.add_test("""
+Date.parse("2001-02-03 12:34:56 GMT+1234");
+""", 981158456000.0)
+
+tester.add_test("""
+(new Date("2001-02-03 12:34:56 GMT+1234")).valueOf();
+""", 981158456000.0)
+
+tester.add_test("""
+(new Date(123456789.0)).valueOf();
+""", 123456789.0)
+
+tester.add_test("""
+Date.length;
+""", 7.0)
+
+tester.add_test("""
+var now = new Date();
+var val = now.valueOf();
+Date.parse(now.toString()) == Math.floor(val / 1000) * 1000;
+""", js_true)
+
+tester.add_test("""
+var now = new Date();
+var val = now.valueOf();
+Date.parse(now.toUTCString()) == Math.floor(val / 1000) * 1000;
+""", js_true)
+
+tester.add_test("""
+(new Date(Date.UTC(2009, 10, 1))).getUTCFullYear();
+""", 2009.0)
+
+tester.add_test("""
+(new Date(Date.UTC(2009, 10, 1))).getUTCMonth();
+""", 10.0)
+
+tester.add_test("""
+(new Date(Date.UTC(2009, 10, 27, 23))).getUTCHours();
+""", 23.0)
+
+tester.add_test("""
+(new Date(Date.UTC(2009, 10, 27, 23, 59))).getUTCMinutes();
+""", 59.0)
+
+tester.add_test("""
+(new Date(Date.UTC(2009, 10, 27, 23, 59, 58))).getUTCSeconds();
+""", 58.0)
+
+tester.add_test("""
+(new Date(Date.UTC(2009, 10, 27, 23, 59, 58, 999))).getUTCMilliseconds();
+""", 999.0)
+
+tester.add_test("""
+var x = new Date(0.0);
+x.setTime(12345.0);
+x.valueOf();
+""", 12345.0)
+
+tester.add_test("""
+var x = new Date(0.0);
+x.setUTCMilliseconds(999);
+x.setUTCSeconds(59);
+x.setUTCMinutes(59);
+x.setUTCHours(23);
+x.setUTCDate(9);
+x.setUTCMonth(9);
+x.setUTCFullYear(2009);
+x.valueOf();
+""", 1255132799999.0)
 
 tester.run_tests()
