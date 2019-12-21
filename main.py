@@ -824,6 +824,471 @@ def arg_get(args, idx):
     return args[idx]
 
 
+def get_prototype(o):
+    return o.get_internal("prototype")
+
+
+def get_class(o):
+    return o.get_internal("class")
+
+
+def js_get(o, prop_name):
+    x = o.get(prop_name)
+    if x is not None:
+        return x.value
+    proto = get_prototype(o)
+    if proto is js_null:
+        return js_undefined
+    return js_get(proto, prop_name)
+
+
+def is_array_index(_, prop_name):
+    i = to_uint_32(_, prop_name)
+    return to_string(_, i) == prop_name and i != 2**32 - 1
+
+
+def array_update_length(_, arr, new_idx):
+    if not is_array_index(_, new_idx):
+        return
+    length = arr.get("length").value
+    new_idx = to_uint_32(_, new_idx)
+    if new_idx >= length:
+        arr.set_value("length", new_idx + 1)
+
+
+def js_put(_, o, prop_name, value):
+    if not js_can_put(o, prop_name):
+        return
+    if o.get(prop_name) is not None:
+        if is_array(o):
+            if prop_name == "length":
+                new_length = to_uint_32(_, value)
+                old_length = o.get("length").value
+                for k in range(int(new_length), int(old_length)):
+                    idx = to_string(_, t_js_number(k))
+                    if o.get(idx) is not None:
+                        o.delete(idx)
+                value = new_length
+        o.set_value(prop_name, value)
+        if is_array(o):
+            array_update_length(_, o, prop_name)
+        return
+    o.put(prop_name, value)
+    if is_array(o):
+        array_update_length(_, o, prop_name)
+
+
+def js_can_put(o, prop_name):
+    x = o.get(prop_name)
+    if x is not None:
+        return not x.read_only
+    proto = get_prototype(o)
+    if proto is js_null:
+        return True
+    return js_can_put(proto, prop_name)
+
+
+def js_has_property(o, prop_name):
+    x = o.get(prop_name)
+    if x is not None:
+        return True
+    proto = get_prototype(o)
+    if proto is js_null:
+        return False
+    return js_has_property(proto, prop_name)
+
+
+def js_delete(o, prop_name):
+    x = o.get(prop_name)
+    if x is None:
+        return True
+    if x.dont_delete:
+        return False
+    o.delete(prop_name)
+    return True
+
+
+def js_default_value(_, o, hint=None):
+    if hint is None:
+        if get_class(o) == "Date":
+            hint = t_js_string
+        else:
+            hint = t_js_number
+
+    if hint is t_js_string:
+        x = js_get(o, "toString")
+        if type(x) is t_js_object:
+            y = js_call(_, x, o, [])
+            if is_primitive_value(y):
+                return y
+        z = js_get(o, "valueOf")
+        if type(z) is not t_js_object:
+            raise t_runtime_error()
+        w = js_call(_, z, o, [])
+        if not is_primitive_value(w):
+            raise t_runtime_error()
+        return w
+
+    if hint is t_js_number:
+        x = js_get(o, "valueOf")
+        if type(x) is t_js_object:
+            y = js_call(_, x, o, [])
+            if is_primitive_value(y):
+                return y
+        z = js_get(o, "toString")
+        if type(z) is not t_js_object:
+            raise t_runtime_error()
+        w = js_call(_, z, o, [])
+        if not is_primitive_value(w):
+            raise t_runtime_error()
+        return w
+
+
+def js_construct(_, obj, args):
+    return obj.get_internal("construct")(_, args, obj)
+
+
+def js_call(_, func, this, args):
+    body = func.get_internal("call")
+    if type(body) is not t_ast:
+        return body(_, this, args)
+    params = func.get_internal("function_params")
+    _.enter_func_code(this, args, func)
+    instantiate_params(_, params, args)
+    instantiate_vars(_, body)
+    res = normal_completion
+    for i in range(len(body.kids)):
+        if res.kind != "normal":
+            break
+        c = js_eval_stmt(_, body.kids[i])
+        v = c.value
+        if v is None:
+            v = res.value
+        res = t_js_completion(c.kind, v)
+    if res.kind == "return":
+        res = res.value
+    else:
+        res = js_undefined
+    _.leave()
+    return res
+
+
+def get_base(v):
+    if type(v) is t_js_reference:
+        return v.base
+    raise t_runtime_error()
+
+
+def get_property_name(v):
+    if type(v) is t_js_reference:
+        return v.property_name
+    raise t_runtime_error()
+
+
+def get_value(v):
+    if type(v) is not t_js_reference:
+        return v
+    b = get_base(v)
+    if b is js_null:
+        raise t_runtime_error()
+    return js_get(b, get_property_name(v))
+
+
+def put_value(_, v, w):
+    if type(v) is not t_js_reference:
+        raise t_runtime_error()
+    b = get_base(v)
+    if b is js_null:
+        js_put(_, _.global_object, get_property_name(v), w)
+    else:
+        js_put(_, b, get_property_name(v), w)
+
+
+def to_primitive(_, value, preferred_type=None):
+    l = (t_js_undefined, t_js_null, t_js_boolean, t_js_number, t_js_string)
+    if type(value) in l:
+        return value
+    if type(value) is not t_js_object:
+        raise t_runtime_error()
+    x = js_default_value(_, value, preferred_type)
+    if type(x) in (t_js_object, t_js_reference):
+        raise t_runtime_error()
+    return x
+
+
+def to_boolean(value):
+    if type(value) in (t_js_undefined, t_js_null):
+        return js_false
+    if type(value) is t_js_boolean:
+        return value
+    if type(value) is t_js_number:
+        return t_js_boolean(not is_false_number(value))
+    if type(value) is t_js_string:
+        return t_js_boolean(value != "")
+    if type(value) is t_js_object:
+        return js_true
+    raise t_runtime_error()
+
+
+def js_string_to_number(value):
+    if value == "":
+        return 0.0
+    try:
+        if value.startswith("0x") or value.startswith("0X"):
+            return float(int(value, 16))
+        return float(value)
+    except ValueError:
+        return float("nan")
+
+
+def to_number(_, value):
+    if type(value) is t_js_undefined:
+        return float("nan")
+    if type(value) is t_js_null:
+        return 0.0
+    if type(value) is t_js_boolean:
+        if value:
+            return 1.0
+        else:
+            return 0.0
+    if type(value) is t_js_number:
+        return value
+    if type(value) is t_js_string:
+        return js_string_to_number(value.strip("\t\f\r\v \n"))
+    if type(value) is t_js_object:
+        return to_number(_, to_primitive(_, value, t_js_number))
+    raise t_runtime_error()
+
+
+def sign(x):
+    if x > 0.0:
+        return 1.0
+    else:
+        return -1.0
+
+
+def to_integer(_, value):
+    x = to_number(_, value)
+    if is_nan(x):
+        return 0.0
+    if x == 0.0 or x == math.inf or x == -math.inf:
+        return x
+    return sign(x) * math.floor(abs(x))
+
+
+def to_int_32(_, value):
+    x = to_number(_, value)
+    if is_nan(x) or x in (0.0, math.inf, -math.inf):
+        return 0.0
+    x = (sign(x) * math.floor(abs(x))) % 2**32
+    if x >= 2**31:
+        x = x - 2**32
+    return x
+
+
+def to_uint_32(_, value):
+    x = to_number(_, value)
+    if is_nan(x) or x in (0.0, math.inf, -math.inf):
+        return 0.0
+    return (sign(x) * math.floor(abs(x))) % 2**32
+
+
+def to_uint_16(_, value):
+    x = to_number(_, value)
+    if is_nan(x) or x in (0.0, math.inf, -math.inf):
+        return 0.0
+    return (sign(x) * math.floor(abs(x))) % 2**16
+
+
+def js_number_to_string(value):
+    if is_nan(value):
+        return "NaN"
+    if value == 0.0:
+        return "0"
+    if value == math.inf:
+        return "Infinity"
+    if value == -math.inf:
+        return "-Infinity"
+    if value.is_integer():
+        return t_js_string(str(int(value)))
+    return t_js_string(str(value))
+
+
+def to_string(_, value):
+    if type(value) is t_js_undefined:
+        return t_js_string("undefined")
+    if type(value) is t_js_null:
+        return t_js_string("null")
+    if type(value) is t_js_boolean:
+        if value:
+            return "true"
+        else:
+            return "false"
+    if type(value) is t_js_number:
+        return js_number_to_string(value)
+    if type(value) is t_js_string:
+        return value
+    if type(value) is t_js_object:
+        return to_string(_, to_primitive(_, value, t_js_string))
+    raise t_runtime_error()
+
+
+def to_object(_, value):
+    if type(value) is t_js_undefined or type(value) is t_js_null:
+        raise t_runtime_error()
+    if type(value) is t_js_string:
+        return construct_string(_, [value])
+    if type(value) is t_js_boolean:
+        return construct_boolean(_, [value])
+    if type(value) is t_js_number:
+        return construct_number(_, [value])
+    if type(value) is t_js_object:
+        return value
+
+
+def exp_val(_, x):
+    return get_value(js_eval_exp(_, x))
+
+
+def js_abstract_less_than(_, x, y):
+    x = to_primitive(_, x, t_js_number)
+    y = to_primitive(_, y, t_js_number)
+    if type(x) is t_js_string and type(y) is t_js_string:
+        return x < y
+    x = to_number(_, x)
+    y = to_number(_, y)
+    if is_nan(x) or is_nan(y):
+        return js_undefined
+    if x == math.inf:
+        return js_false
+    if y == math.inf:
+        return js_true
+    if y == -math.inf:
+        return js_false
+    if x == -math.inf:
+        return js_true
+    if x == y:
+        return js_false
+    if x < y:
+        return js_true
+    return js_false
+
+
+def js_abstract_equals(_, x, y):
+    if type(x) is type(y):
+        if type(x) is t_js_object:
+            return x is y
+        return x == y
+    if x == js_null and y == js_undefined:
+        return js_true
+    if x == js_undefined and y == js_null:
+        return js_true
+    if type(x) is t_js_number and type(y) is t_js_string:
+        return x == to_number(_, y)
+    if type(x) is t_js_string and type(y) is t_js_number:
+        return to_number(_, x) == y
+    if type(x) is t_js_boolean:
+        return js_abstract_equals(_, to_number(_, x), y)
+    if type(y) is t_js_boolean:
+        return js_abstract_equals(_, x, to_number(_, y))
+    if type(x) in [t_js_string, t_js_number] and type(y) is t_js_object:
+        return js_abstract_equals(_, x, to_primitive(_, y))
+    if type(y) in [t_js_string, t_js_number] and type(x) is t_js_object:
+        return js_abstract_equals(_, y, to_primitive(_, x))
+    return js_false
+
+
+def eval_identifier(_, identifier):
+    new_base = js_null
+    for obj in reversed(_.exec_context().scope_chain.stack):
+        if js_has_property(obj, identifier):
+            new_base = obj
+            break
+    return t_js_reference(base=new_base, property_name=identifier)
+
+
+def eval_leaf(_, kind, value):
+    if kind == "this":
+        return _.exec_context().this
+    elif kind == "identifier":
+        return eval_identifier(_, value)
+    elif kind == "null":
+        return js_null
+    elif kind == "true":
+        return js_true
+    elif kind == "false":
+        return js_false
+    elif kind == "octal_literal":
+        return t_js_number(int(value, base=8))
+    elif kind == "hex_literal":
+        return t_js_number(int(value, base=16))
+    elif kind == "decimal_literal":
+        return t_js_number(value)
+    elif kind == "string_literal":
+        res = t_js_string("")
+        i = 1
+        while i != len(value) - 1:
+            if value[i] == "\\":
+                i += 1
+                ch = value[i]
+                if ch in ["'", "\"", "\\"]:
+                    res += ch
+                elif ch == "b":
+                    res += "\b"
+                elif ch == "f":
+                    res += "\f"
+                elif ch == "n":
+                    res += "\n"
+                elif ch == "r":
+                    res += "\r"
+                elif ch == "t":
+                    res += "\t"
+                elif is_octal_digit(ch):
+                    oct_value = ""
+                    for j in range(3 if ch in "0123" else 2):
+                        oct_value += value[i]
+                        i += 1
+                        if not is_octal_digit(value[i]):
+                            break
+                    i -= 1
+                    res += chr(int(oct_value, base=8))
+                elif ch == "x":
+                    hex_value = ""
+                    for j in range(2):
+                        i += 1
+                        hex_value += value[i]
+                    res += chr(int(hex_value, base=16))
+                elif ch == "u":
+                    hex_value = ""
+                    for j in range(4):
+                        i += 1
+                        hex_value += value[i]
+                    res += chr(int(hex_value, base=16))
+                else:
+                    assert False
+            else:
+                res += value[i]
+            i += 1
+        return res
+    else:
+        assert False
+
+
+def eval_arguments(_, args):
+    res = []
+    for arg in args:
+        res.append(exp_val(_, arg))
+    return res
+
+
+def is_function(x):
+    return get_class(x) == "Function"
+
+
+def is_array(x):
+    return get_class(x) == "Array"
+
+
 def js_eval(_, this, args):
     x = arg_get(args, 0)
     if type(x) is not str:
@@ -1017,27 +1482,31 @@ def array_prototype_join(_, this, args):
     return res
 
 
+def array_swap(_, this, i, j):
+    iv = js_get(this, i)
+    jv = js_get(this, j)
+    if this.get(j) is not None:
+        if this.get(i) is not None:
+            js_put(_, this, i, jv)
+            js_put(_, this, j, iv)
+        else:
+            js_put(_, this, i, jv)
+            js_delete(this, j)
+    else:
+        if this.get(i) is not None:
+            js_put(_, this, j, iv)
+            js_delete(this, i)
+        else:
+            js_delete(this, i)
+            js_delete(this, j)
+
+
 def array_prototype_reverse(_, this, args):
     length = to_uint_32(_, js_get(this, "length"))
     for k in range(int(length // 2)):
         i = to_string(_, t_js_number(k))
         j = to_string(_, length - 1 - k)
-        iv = js_get(this, i)
-        jv = js_get(this, j)
-        if this.get(j) is not None:
-            if this.get(i) is not None:
-                js_put(_, this, i, jv)
-                js_put(_, this, j, iv)
-            else:
-                js_put(_, this, i, jv)
-                js_delete(this, j)
-        else:
-            if this.get(i) is not None:
-                js_put(_, this, j, iv)
-                js_delete(this, i)
-            else:
-                js_delete(this, i)
-                js_delete(this, j)
+        array_swap(_, this, i, j)
     return this
 
 
@@ -2165,471 +2634,6 @@ class t_js_state:
 
 def is_activation_object(o):
     return get_class(o) == "activation_object"
-
-
-def get_prototype(o):
-    return o.get_internal("prototype")
-
-
-def get_class(o):
-    return o.get_internal("class")
-
-
-def js_get(o, prop_name):
-    x = o.get(prop_name)
-    if x is not None:
-        return x.value
-    proto = get_prototype(o)
-    if proto is js_null:
-        return js_undefined
-    return js_get(proto, prop_name)
-
-
-def is_array_index(_, prop_name):
-    i = to_uint_32(_, prop_name)
-    return to_string(_, i) == prop_name and i != 2**32 - 1
-
-
-def array_update_length(_, arr, new_idx):
-    if not is_array_index(_, new_idx):
-        return
-    length = arr.get("length").value
-    new_idx = to_uint_32(_, new_idx)
-    if new_idx >= length:
-        arr.set_value("length", new_idx + 1)
-
-
-def js_put(_, o, prop_name, value):
-    if not js_can_put(o, prop_name):
-        return
-    if o.get(prop_name) is not None:
-        if is_array(o):
-            if prop_name == "length":
-                new_length = to_uint_32(_, value)
-                old_length = o.get("length").value
-                for k in range(int(new_length), int(old_length)):
-                    idx = to_string(_, t_js_number(k))
-                    if o.get(idx) is not None:
-                        o.delete(idx)
-                value = new_length
-        o.set_value(prop_name, value)
-        if is_array(o):
-            array_update_length(_, o, prop_name)
-        return
-    o.put(prop_name, value)
-    if is_array(o):
-        array_update_length(_, o, prop_name)
-
-
-def js_can_put(o, prop_name):
-    x = o.get(prop_name)
-    if x is not None:
-        return not x.read_only
-    proto = get_prototype(o)
-    if proto is js_null:
-        return True
-    return js_can_put(proto, prop_name)
-
-
-def js_has_property(o, prop_name):
-    x = o.get(prop_name)
-    if x is not None:
-        return True
-    proto = get_prototype(o)
-    if proto is js_null:
-        return False
-    return js_has_property(proto, prop_name)
-
-
-def js_delete(o, prop_name):
-    x = o.get(prop_name)
-    if x is None:
-        return True
-    if x.dont_delete:
-        return False
-    o.delete(prop_name)
-    return True
-
-
-def js_default_value(_, o, hint=None):
-    if hint is None:
-        if get_class(o) == "Date":
-            hint = t_js_string
-        else:
-            hint = t_js_number
-
-    if hint is t_js_string:
-        x = js_get(o, "toString")
-        if type(x) is t_js_object:
-            y = js_call(_, x, o, [])
-            if is_primitive_value(y):
-                return y
-        z = js_get(o, "valueOf")
-        if type(z) is not t_js_object:
-            raise t_runtime_error()
-        w = js_call(_, z, o, [])
-        if not is_primitive_value(w):
-            raise t_runtime_error()
-        return w
-
-    if hint is t_js_number:
-        x = js_get(o, "valueOf")
-        if type(x) is t_js_object:
-            y = js_call(_, x, o, [])
-            if is_primitive_value(y):
-                return y
-        z = js_get(o, "toString")
-        if type(z) is not t_js_object:
-            raise t_runtime_error()
-        w = js_call(_, z, o, [])
-        if not is_primitive_value(w):
-            raise t_runtime_error()
-        return w
-
-
-def js_construct(_, obj, args):
-    return obj.get_internal("construct")(_, args, obj)
-
-
-def js_call(_, func, this, args):
-    body = func.get_internal("call")
-    if type(body) is not t_ast:
-        return body(_, this, args)
-    params = func.get_internal("function_params")
-    _.enter_func_code(this, args, func)
-    instantiate_params(_, params, args)
-    instantiate_vars(_, body)
-    res = normal_completion
-    for i in range(len(body.kids)):
-        if res.kind != "normal":
-            break
-        c = js_eval_stmt(_, body.kids[i])
-        v = c.value
-        if v is None:
-            v = res.value
-        res = t_js_completion(c.kind, v)
-    if res.kind == "return":
-        res = res.value
-    else:
-        res = js_undefined
-    _.leave()
-    return res
-
-
-def get_base(v):
-    if type(v) is t_js_reference:
-        return v.base
-    raise t_runtime_error()
-
-
-def get_property_name(v):
-    if type(v) is t_js_reference:
-        return v.property_name
-    raise t_runtime_error()
-
-
-def get_value(v):
-    if type(v) is not t_js_reference:
-        return v
-    b = get_base(v)
-    if b is js_null:
-        raise t_runtime_error()
-    return js_get(b, get_property_name(v))
-
-
-def put_value(_, v, w):
-    if type(v) is not t_js_reference:
-        raise t_runtime_error()
-    b = get_base(v)
-    if b is js_null:
-        js_put(_, _.global_object, get_property_name(v), w)
-    else:
-        js_put(_, b, get_property_name(v), w)
-
-
-def to_primitive(_, value, preferred_type=None):
-    l = (t_js_undefined, t_js_null, t_js_boolean, t_js_number, t_js_string)
-    if type(value) in l:
-        return value
-    if type(value) is not t_js_object:
-        raise t_runtime_error()
-    x = js_default_value(_, value, preferred_type)
-    if type(x) in (t_js_object, t_js_reference):
-        raise t_runtime_error()
-    return x
-
-
-def to_boolean(value):
-    if type(value) in (t_js_undefined, t_js_null):
-        return js_false
-    if type(value) is t_js_boolean:
-        return value
-    if type(value) is t_js_number:
-        return t_js_boolean(not is_false_number(value))
-    if type(value) is t_js_string:
-        return t_js_boolean(value != "")
-    if type(value) is t_js_object:
-        return js_true
-    raise t_runtime_error()
-
-
-def js_string_to_number(value):
-    if value == "":
-        return 0.0
-    try:
-        if value.startswith("0x") or value.startswith("0X"):
-            return float(int(value, 16))
-        return float(value)
-    except ValueError:
-        return float("nan")
-
-
-def to_number(_, value):
-    if type(value) is t_js_undefined:
-        return float("nan")
-    if type(value) is t_js_null:
-        return 0.0
-    if type(value) is t_js_boolean:
-        if value:
-            return 1.0
-        else:
-            return 0.0
-    if type(value) is t_js_number:
-        return value
-    if type(value) is t_js_string:
-        return js_string_to_number(value.strip("\t\f\r\v \n"))
-    if type(value) is t_js_object:
-        return to_number(_, to_primitive(_, value, t_js_number))
-    raise t_runtime_error()
-
-
-def sign(x):
-    if x > 0.0:
-        return 1.0
-    else:
-        return -1.0
-
-
-def to_integer(_, value):
-    x = to_number(_, value)
-    if is_nan(x):
-        return 0.0
-    if x == 0.0 or x == math.inf or x == -math.inf:
-        return x
-    return sign(x) * math.floor(abs(x))
-
-
-def to_int_32(_, value):
-    x = to_number(_, value)
-    if is_nan(x) or x in (0.0, math.inf, -math.inf):
-        return 0.0
-    x = (sign(x) * math.floor(abs(x))) % 2**32
-    if x >= 2**31:
-        x = x - 2**32
-    return x
-
-
-def to_uint_32(_, value):
-    x = to_number(_, value)
-    if is_nan(x) or x in (0.0, math.inf, -math.inf):
-        return 0.0
-    return (sign(x) * math.floor(abs(x))) % 2**32
-
-
-def to_uint_16(_, value):
-    x = to_number(_, value)
-    if is_nan(x) or x in (0.0, math.inf, -math.inf):
-        return 0.0
-    return (sign(x) * math.floor(abs(x))) % 2**16
-
-
-def js_number_to_string(value):
-    if is_nan(value):
-        return "NaN"
-    if value == 0.0:
-        return "0"
-    if value == math.inf:
-        return "Infinity"
-    if value == -math.inf:
-        return "-Infinity"
-    if value.is_integer():
-        return t_js_string(str(int(value)))
-    return t_js_string(str(value))
-
-
-def to_string(_, value):
-    if type(value) is t_js_undefined:
-        return t_js_string("undefined")
-    if type(value) is t_js_null:
-        return t_js_string("null")
-    if type(value) is t_js_boolean:
-        if value:
-            return "true"
-        else:
-            return "false"
-    if type(value) is t_js_number:
-        return js_number_to_string(value)
-    if type(value) is t_js_string:
-        return value
-    if type(value) is t_js_object:
-        return to_string(_, to_primitive(_, value, t_js_string))
-    raise t_runtime_error()
-
-
-def to_object(_, value):
-    if type(value) is t_js_undefined or type(value) is t_js_null:
-        raise t_runtime_error()
-    if type(value) is t_js_string:
-        return construct_string(_, [value])
-    if type(value) is t_js_boolean:
-        return construct_boolean(_, [value])
-    if type(value) is t_js_number:
-        return construct_number(_, [value])
-    if type(value) is t_js_object:
-        return value
-
-
-def exp_val(_, x):
-    return get_value(js_eval_exp(_, x))
-
-
-def js_abstract_less_than(_, x, y):
-    x = to_primitive(_, x, t_js_number)
-    y = to_primitive(_, y, t_js_number)
-    if type(x) is t_js_string and type(y) is t_js_string:
-        return x < y
-    x = to_number(_, x)
-    y = to_number(_, y)
-    if is_nan(x) or is_nan(y):
-        return js_undefined
-    if x == math.inf:
-        return js_false
-    if y == math.inf:
-        return js_true
-    if y == -math.inf:
-        return js_false
-    if x == -math.inf:
-        return js_true
-    if x == y:
-        return js_false
-    if x < y:
-        return js_true
-    return js_false
-
-
-def js_abstract_equals(_, x, y):
-    if type(x) is type(y):
-        if type(x) is t_js_object:
-            return x is y
-        return x == y
-    if x == js_null and y == js_undefined:
-        return js_true
-    if x == js_undefined and y == js_null:
-        return js_true
-    if type(x) is t_js_number and type(y) is t_js_string:
-        return x == to_number(_, y)
-    if type(x) is t_js_string and type(y) is t_js_number:
-        return to_number(_, x) == y
-    if type(x) is t_js_boolean:
-        return js_abstract_equals(_, to_number(_, x), y)
-    if type(y) is t_js_boolean:
-        return js_abstract_equals(_, x, to_number(_, y))
-    if type(x) in [t_js_string, t_js_number] and type(y) is t_js_object:
-        return js_abstract_equals(_, x, to_primitive(_, y))
-    if type(y) in [t_js_string, t_js_number] and type(x) is t_js_object:
-        return js_abstract_equals(_, y, to_primitive(_, x))
-    return js_false
-
-
-def eval_identifier(_, identifier):
-    new_base = js_null
-    for obj in reversed(_.exec_context().scope_chain.stack):
-        if js_has_property(obj, identifier):
-            new_base = obj
-            break
-    return t_js_reference(base=new_base, property_name=identifier)
-
-
-def eval_leaf(_, kind, value):
-    if kind == "this":
-        return _.exec_context().this
-    elif kind == "identifier":
-        return eval_identifier(_, value)
-    elif kind == "null":
-        return js_null
-    elif kind == "true":
-        return js_true
-    elif kind == "false":
-        return js_false
-    elif kind == "octal_literal":
-        return t_js_number(int(value, base=8))
-    elif kind == "hex_literal":
-        return t_js_number(int(value, base=16))
-    elif kind == "decimal_literal":
-        return t_js_number(value)
-    elif kind == "string_literal":
-        res = t_js_string("")
-        i = 1
-        while i != len(value) - 1:
-            if value[i] == "\\":
-                i += 1
-                ch = value[i]
-                if ch in ["'", "\"", "\\"]:
-                    res += ch
-                elif ch == "b":
-                    res += "\b"
-                elif ch == "f":
-                    res += "\f"
-                elif ch == "n":
-                    res += "\n"
-                elif ch == "r":
-                    res += "\r"
-                elif ch == "t":
-                    res += "\t"
-                elif is_octal_digit(ch):
-                    oct_value = ""
-                    for j in range(3 if ch in "0123" else 2):
-                        oct_value += value[i]
-                        i += 1
-                        if not is_octal_digit(value[i]):
-                            break
-                    i -= 1
-                    res += chr(int(oct_value, base=8))
-                elif ch == "x":
-                    hex_value = ""
-                    for j in range(2):
-                        i += 1
-                        hex_value += value[i]
-                    res += chr(int(hex_value, base=16))
-                elif ch == "u":
-                    hex_value = ""
-                    for j in range(4):
-                        i += 1
-                        hex_value += value[i]
-                    res += chr(int(hex_value, base=16))
-                else:
-                    assert False
-            else:
-                res += value[i]
-            i += 1
-        return res
-    else:
-        assert False
-
-
-def eval_arguments(_, args):
-    res = []
-    for arg in args:
-        res.append(exp_val(_, arg))
-    return res
-
-
-def is_function(x):
-    return get_class(x) == "Function"
-
-
-def is_array(x):
-    return get_class(x) == "Array"
 
 
 def eval_op(_, op, args):
