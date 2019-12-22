@@ -6,6 +6,7 @@ import traceback
 import random
 import time
 import datetime
+import functools
 
 from parse import *
 
@@ -822,6 +823,10 @@ def array_prototype_join(_, this, args):
 
 
 def array_swap(_, this, i, j):
+    i = t_js_number(i)
+    j = t_js_number(j)
+    i = to_string(_, i)
+    j = to_string(_, j)
     iv = js_get(this, i)
     jv = js_get(this, j)
     if this.get(j) is not None:
@@ -843,8 +848,61 @@ def array_swap(_, this, i, j):
 def array_prototype_reverse(_, this, args):
     length = to_uint_32(_, js_get(this, "length"))
     for k in range(int(length // 2)):
-        i = to_string(_, t_js_number(k))
-        j = to_string(_, length - 1 - k)
+        array_swap(_, this, t_js_number(k), length - 1 - k)
+    return this
+
+
+def sort_compare(_, this, j, k, compare_fn):
+    j = t_js_number(j)
+    k = t_js_number(k)
+    j = to_string(_, j)
+    k = to_string(_, k)
+    xj = this.get(j) is None
+    xk = this.get(k) is None
+    if xj and xk:
+        return 0.0
+    if xj:
+        return 1.0
+    if xk:
+        return -1.0
+    x = js_get(this, j)
+    y = js_get(this, k)
+    if (x is js_undefined) and (y is js_undefined):
+        return 0.0
+    if x is js_undefined:
+        return 1.0
+    if y is js_undefined:
+        return -1.0
+    if compare_fn is js_undefined:
+        x = to_string(_, x)
+        y = to_string(_, y)
+        if x < y:
+            return -1.0
+        if x > y:
+            return 1.0
+        return 0.0
+    else:
+        return js_call(_, compare_fn, js_undefined, [x, y])
+
+
+def array_prototype_sort(_, this, args):
+    length = to_uint_32(_, js_get(this, "length"))
+    invp = list(range(int(length)))
+    compare_fn_arg = arg_get(args, 0)
+    def compare_fn(j, k):
+        return sort_compare(_, this, j, k, compare_fn_arg)
+    invp.sort(key=functools.cmp_to_key(compare_fn))
+    p = [None] * len(invp)
+    for i in range(len(invp)):
+        p[invp[i]] = i
+    i = int(length)
+    i = 0
+    while i < length:
+        if i == p[i]:
+            i += 1
+            continue
+        j = p[i]
+        p[i], p[j] = p[j], p[i]
         array_swap(_, this, i, j)
     return this
 
@@ -1023,6 +1081,7 @@ def global_array_init(_):
     put_native_method(_, _.array_prototype, "join", array_prototype_join, 1)
     put_native_method(_, _.array_prototype, "toString", array_prototype_join)
     put_native_method(_, _.array_prototype, "reverse", array_prototype_reverse)
+    put_native_method(_, _.array_prototype, "sort", array_prototype_sort)
     _.array_prototype.put("constructor", array_ctor, non_length_attrs)
 
     array_ctor.put("prototype", _.array_prototype, non_length_attrs)

@@ -905,6 +905,21 @@ x.setUTCFullYear(2009);
 x.valueOf();
 """, 1255132799999.0)
 
+tester.add_test("""
+var a = Array(7, 8, 9, 3, 4, 0, 3, 5, 6, 1, 4, 5, 3, 9, 7, 9, 5, 0, 3, 1);
+a.sort();
+a.join(" ");
+""", "0 0 1 1 3 3 3 3 4 4 5 5 5 6 7 7 8 9 9 9")
+
+tester.add_test("""
+function compare_fn(x, y) {
+ return y - x;
+}
+var a = Array(0, 4, 5, 3, 9, 15, 44, 3, 100, 93, 54, 34);
+a.sort(compare_fn);
+a.join(" ");
+""", "100 93 54 44 34 15 9 5 4 3 3 0")
+
 if __name__ == "__main__":
     fail_limit = int(sys.argv[1]) if len(sys.argv) >= 2 else None
     tester.run_tests(fail_limit)
